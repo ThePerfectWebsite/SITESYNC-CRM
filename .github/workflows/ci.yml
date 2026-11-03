@@ -1,0 +1,89 @@
+# Lint, typecheck and the full test suite on every push to main and every pull request.
+# Tests run against a throwaway Postgres service container; the passwords below exist
+# only inside that container for the length of the job and protect nothing real.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static:
+    name: Lint and typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+
+  test:
+    name: Tests (unit, integration, E2E)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:18.6-alpine
+        env:
+          POSTGRES_USER: sitesync_admin
+          POSTGRES_PASSWORD: ci-only-superuser-password
+          POSTGRES_DB: sitesync
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sitesync_admin -d sitesync"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      POSTGRES_USER: sitesync_admin
+      POSTGRES_DB: sitesync
+      SITESYNC_OWNER_PASSWORD: ci-only-owner-password
+      SITESYNC_APP_PASSWORD: ci-only-app-password
+      DATABASE_URL: postgres://sitesync_app:ci-only-app-password@127.0.0.1:5432/sitesync_test
+      DATABASE_OWNER_URL: postgres://sitesync_owner:ci-only-owner-password@127.0.0.1:5432/sitesync
+      DATABASE_URL_TEST: postgres://sitesync_app:ci-only-app-password@127.0.0.1:5432/sitesync_test
+      DATABASE_OWNER_URL_TEST: postgres://sitesync_owner:ci-only-owner-password@127.0.0.1:5432/sitesync_test
+      SITESYNC_APP_ORIGIN: http://127.0.0.1:3000
+      SITESYNC_LAN_MODE: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      # Same roles and databases the Docker init script creates locally (decision 0006).
+      - name: Create database roles and the test database
+        env:
+          PGHOST: 127.0.0.1
+          PGPASSWORD: ci-only-superuser-password
+        run: sh docker/initdb/01-roles-and-databases.sh
+      - run: npm ci
+      - name: Apply migrations to the test database
+        run: npm run db:migrate -- --test
+      - name: Unit and integration tests
+        run: npm test
+      - name: Install Chromium for E2E
+        run: npx playwright install --with-deps chromium
+      - name: E2E tests
+        run: npm run test:e2e
+      - name: Upload Playwright traces
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-traces
+          path: test-results/
+          retention-days: 7
