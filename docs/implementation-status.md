@@ -89,7 +89,10 @@ Phase 3a — GitHub read sync. Committed on `main` after Phase 2 (`c65e275`).
 None required. To use GitHub: a fine-grained read-only token in `.env`, then add the integration and test it.
 
 ### 5. Known limitations / unmet criteria
-- **Never run against the real GitHub API.** All verification used a scripted fake built from GitHub's documentation (endpoints, rate-limit rules, webhook signatures). The exact fine-grained token permissions in `docs/github.md` still need checking against a live token. Verify with **Test connection** and one repository before relying on it.
+- **Partly verified against the real GitHub API (2026-11-03)**, with a fine-grained token on a public, empty repository (`ThePerfectWebsite/SITESYNC-CRM`).
+  - **Confirmed live:** auth (`GET /user`), repository info, rate-limit headers, the open-PR list, and idempotent re-sync.
+  - **Live findings, fixed and tested:** a private repo the token isn't granted returns 404, now reported as "GitHub can't see owner/repo…". An empty repository returns 404 for the branch and 409 "Git Repository is empty" for commits; it now syncs as OK with "no commits yet".
+  - **Not yet seen live:** commits, check runs, and the token permissions needed for checks on a private repo. Those need a repository with commits and CI.
 - `pr_open` stays informational, as OQ-7 allows: open PRs into production are shown, not blocking. Flagging a PR as "must merge" isn't built.
 - Polling runs every 5 minutes, and a link is synced when it's older than `sync.poll_interval_minutes` (default 10). There's no UI for the interval yet; set the `app_settings` key, range 5–60.
 - One process runs the job runner. Webhook processing is retried by our inbox logic, not pg-boss retries (decision 0009).

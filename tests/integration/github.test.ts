@@ -208,6 +208,44 @@ describe("sync", () => {
     expect(await linksDueForPoll(db, 10, new Date(Date.now() + 2 * 3600 * 1000))).toContain(linkId);
   });
 
+  it("a 404 says what to check: repo access, or a missing branch", async () => {
+    const { linkId, integrationId } = await setup();
+    const hidden = fakeGitHub({ "GET /repos/acme/site": { status: 404, body: { message: "Not Found" } } });
+    await syncRepositoryLink(db, linkId, { factory: factoryFor(hidden.fetchImpl) });
+    expect((await getIntegration(db, integrationId))?.healthDetail).toMatch(
+      /^GitHub can't see acme\/site\. Check the owner and name, and that the token has access/,
+    );
+
+    const noBranch = fakeGitHub({
+      ...healthyRepo({ head, commits }),
+      "GET /repos/acme/site": { body: { id: 1, full_name: "acme/site", default_branch: "trunk", private: true } },
+      "GET /repos/acme/site/branches/main": { status: 404, body: { message: "Branch not found" } },
+    });
+    await syncRepositoryLink(db, linkId, { factory: factoryFor(noBranch.fetchImpl) });
+    expect((await getIntegration(db, integrationId))?.healthDetail).toBe(
+      "The branch main doesn't exist in acme/site. Its default branch is trunk.",
+    );
+  });
+
+  it("an empty repository (as GitHub really answers: 404 branch, 409 commits) syncs fine with nothing in it", async () => {
+    const { linkId, integrationId, projectId } = await setup();
+    const empty = fakeGitHub({
+      "GET /repos/acme/site": { body: { id: 1, full_name: "acme/site", default_branch: "main", private: false } },
+      "GET /repos/acme/site/branches/main": { status: 404, body: { message: "Branch not found" } },
+      "GET /repos/acme/site/commits": { status: 409, body: { message: "Git Repository is empty." } },
+      "GET /repos/acme/site/pulls": { body: [] },
+    });
+    const result = await syncRepositoryLink(db, linkId, { factory: factoryFor(empty.fetchImpl) });
+    expect(result).toMatchObject({ status: "ok", headSha: null, commits: 0, pulls: 0, checks: 0 });
+    expect(await getIntegration(db, integrationId)).toMatchObject({ health: "ok" });
+    const synced = await getRepositoryLink(db, linkId);
+    expect(synced?.lastSyncedAt).toBeInstanceOf(Date);
+    expect(synced?.syncCursor?.headSha).toBeUndefined();
+    const readiness = await computeReadiness(db, projectId);
+    expect(readiness.notes).toEqual(["acme/site has no commits on main yet, so there are no checks to count."]);
+    expect(readiness.blockers.some((b) => b.type === "failing_check")).toBe(false);
+  });
+
   it("the poll job enqueues only links that are due", async () => {
     const { linkId } = await setup();
     const queued: string[] = [];

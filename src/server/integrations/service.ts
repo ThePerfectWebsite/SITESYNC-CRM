@@ -235,10 +235,8 @@ export function nextHealth(
     }
   }
   // Token presumably still valid: a sync failure degrades, it doesn't break.
-  return {
-    health: current === "error" ? "error" : "degraded",
-    detail: redactString(describeError(error)).slice(0, 1000),
-  };
+  const detail = error instanceof ProviderError ? redactString(error.message) : redactString(describeError(error));
+  return { health: current === "error" ? "error" : "degraded", detail: detail.slice(0, 1000) };
 }
 
 export class MissingTokenError extends Error {

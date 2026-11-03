@@ -29,3 +29,6 @@ next-env.d.ts
 .DS_Store
 *.pem
 npm-debug.log*
+
+# One-off local probes (e.g. live provider checks)
+/scripts/.probe/

@@ -96,7 +96,9 @@ export function RepositoryPanel({
                 ))}
               </ul>
             ) : (
-              <p className="text-sm text-muted-foreground">No checks reported{summary.headSha ? "" : " (not synced yet)"}.</p>
+              <p className="text-sm text-muted-foreground">
+                {summary.headSha ? "No checks reported." : link.lastSyncedAt ? "No commits yet." : "Not synced yet."}
+              </p>
             )}
           </section>
 

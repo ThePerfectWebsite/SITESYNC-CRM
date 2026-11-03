@@ -206,6 +206,17 @@ describe("GitHub adapter", () => {
     await expect(adapter.listCheckRuns(repo, "abc123")).rejects.toThrow(/full commit SHA/);
   });
 
+  it("reports an empty repository and a missing branch without throwing (seen live)", async () => {
+    const fake = fakeGitHub({
+      "GET /repos/acme/site/commits": { status: 409, body: { message: "Git Repository is empty." } },
+      "GET /repos/acme/site/branches/main": { status: 404, body: { message: "Branch not found" } },
+    });
+    const adapter = createGitHubAdapter({ token: "t", fetchImpl: fake.fetchImpl, ...noSleep });
+    expect(await adapter.listCommits(repo, { branch: "main", limit: 1 })).toEqual({ items: [], truncated: false, empty: true });
+    expect(await adapter.getBranchHead(repo, "main")).toBeNull();
+    expect(fake.calls).toHaveLength(2); // neither is retried
+  });
+
   it("keeps slashes in branch paths and rejects malformed responses", async () => {
     const fake = fakeGitHub({
       "GET /repos/acme/site/branches/release/2026": { body: { name: "release/2026", commit: { sha: sha(3) } } },

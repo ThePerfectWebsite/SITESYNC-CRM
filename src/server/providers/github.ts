@@ -4,7 +4,7 @@
 import { z } from "zod";
 import type { RepositoryEventType } from "../db/schema";
 import type { FetchImpl } from "./fetch";
-import { createHttpClient, hasNextPage, type RateLimit } from "./http";
+import { createHttpClient, hasNextPage, ProviderError, type RateLimit } from "./http";
 
 export const GITHUB_API = "https://api.github.com";
 const API_VERSION = "2022-11-28";
@@ -26,7 +26,8 @@ export type NormalizedEvent = {
   snapshot: Record<string, unknown>;
 };
 
-export type Page<T> = { items: T[]; truncated: boolean };
+/** `empty`: the repository has no commits at all (GitHub answers 409 "Git Repository is empty"). */
+export type Page<T> = { items: T[]; truncated: boolean; empty?: boolean };
 
 const SHA = /^[0-9a-f]{40}$/;
 
@@ -195,7 +196,8 @@ export interface SourceAdapter {
   listCommits(repo: RepoRef, options: { branch: string; since?: Date; limit: number }): Promise<Page<NormalizedEvent>>;
   listOpenPullRequests(repo: RepoRef): Promise<Page<NormalizedEvent>>;
   listCheckRuns(repo: RepoRef, commitSha: string): Promise<Page<NormalizedEvent>>;
-  getBranchHead(repo: RepoRef, branch: string): Promise<string>;
+  /** The branch's head commit, or null if the branch doesn't exist (or the repository is empty). */
+  getBranchHead(repo: RepoRef, branch: string): Promise<string | null>;
 }
 
 export type GitHubAdapterOptions = {
@@ -244,11 +246,19 @@ export function createGitHubAdapter(options: GitHubAdapterOptions): SourceAdapte
 
     async listCommits(repo, { branch, since, limit }) {
       const perPage = Math.min(Math.max(limit, 1), MAX_PER_PAGE);
-      const { data, response } = await client.getJson(`${repoPath(repo)}/commits`, z.array(commitSchema), {
-        sha: branch,
-        per_page: perPage,
-        since: since?.toISOString(),
-      });
+      let result;
+      try {
+        result = await client.getJson(`${repoPath(repo)}/commits`, z.array(commitSchema), {
+          sha: branch,
+          per_page: perPage,
+          since: since?.toISOString(),
+        });
+      } catch (error) {
+        // Seen live: an empty repository answers 409 "Git Repository is empty."
+        if (error instanceof ProviderError && error.status === 409) return { items: [], truncated: false, empty: true };
+        throw error;
+      }
+      const { data, response } = result;
       const items = data
         .slice(0, perPage)
         .map((commit) => normalizeCommit(commit, branch))
@@ -281,7 +291,13 @@ export function createGitHubAdapter(options: GitHubAdapterOptions): SourceAdapte
 
     async getBranchHead(repo, branch) {
       const path = branch.split("/").map(encodeURIComponent).join("/");
-      const { data } = await client.getJson(`${repoPath(repo)}/branches/${path}`, branchSchema);
+      let data;
+      try {
+        ({ data } = await client.getJson(`${repoPath(repo)}/branches/${path}`, branchSchema));
+      } catch (error) {
+        if (error instanceof ProviderError && error.kind === "not_found") return null;
+        throw error;
+      }
       if (!SHA.test(data.commit.sha)) throw new Error("branch head is not a full SHA");
       return data.commit.sha;
     },

@@ -5,6 +5,7 @@ import { and, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db, DbOrTx } from "../db/client";
 import { integrations, repositoryEvents, repositoryLinks } from "../db/schema";
 import type { NormalizedEvent } from "../providers/github";
+import { ProviderError } from "../providers/http";
 import { redact } from "../redact";
 import { githubAdapterFactory, withIntegrationAdapter, type AdapterFactory } from "./service";
 
@@ -75,12 +76,17 @@ export async function upsertRepositoryEvents(
   return written.length;
 }
 
+/** Replaces a bare "404 Not Found" with a message that says what to check. */
+function notFoundAs(error: unknown, message: string): unknown {
+  return error instanceof ProviderError && error.kind === "not_found" ? new ProviderError("not_found", message, 404) : error;
+}
+
 export type SyncMode = "initial" | "poll" | "manual";
 
 export type SyncResult =
   | { status: "skipped"; reason: string }
   | { status: "failed"; error: unknown }
-  | { status: "ok"; headSha: string; commits: number; pulls: number; checks: number; written: number };
+  | { status: "ok"; headSha: string | null; commits: number; pulls: number; checks: number; written: number };
 
 /**
  * Syncs one repository link. Never throws for provider problems: they are
@@ -114,8 +120,23 @@ export async function syncRepositoryLink(
     integration,
     options.factory ?? githubAdapterFactory(),
     async (adapter) => {
-      const info = await adapter.getRepository(repo);
+      const name = `${link.owner}/${link.repo}`;
+      // GitHub answers 404 both for a wrong name and for a private repo the token can't see.
+      const info = await adapter.getRepository(repo).catch((error) => {
+        throw notFoundAs(error, `GitHub can't see ${name}. Check the owner and name, and that the token has access to this repository (fine-grained tokens: Repository access → select it).`);
+      });
       const headSha = await adapter.getBranchHead(repo, link.productionBranch);
+      if (!headSha) {
+        // No such branch: either the repository has no commits yet (fine, nothing to sync)
+        // or the branch name is wrong.
+        const probe = await adapter.listCommits(repo, { branch: info.defaultBranch, limit: 1 });
+        if (!probe.empty) {
+          const hint = link.productionBranch === info.defaultBranch ? "" : ` Its default branch is ${info.defaultBranch}.`;
+          throw new ProviderError("not_found", `The branch ${link.productionBranch} doesn't exist in ${name}.${hint}`, 404);
+        }
+        const pulls = await adapter.listOpenPullRequests(repo);
+        return { info, headSha: null, commits: { items: [], truncated: false }, pulls, checks: [] as NormalizedEvent[] };
+      }
       const commits = await adapter.listCommits(repo, { branch: link.productionBranch, since, limit: INITIAL_COMMITS });
       const pulls = await adapter.listOpenPullRequests(repo);
       const checkShas = [headSha, ...commits.items.map((c) => c.commitSha!).filter((s) => s !== headSha)].slice(
@@ -156,7 +177,7 @@ export async function syncRepositoryLink(
       .set({
         providerRepoId: info.providerRepoId,
         lastSyncedAt: now,
-        syncCursor: { headSha, headCheckedAt: now.toISOString() },
+        syncCursor: { ...(headSha ? { headSha } : {}), headCheckedAt: now.toISOString() },
       })
       .where(eq(repositoryLinks.id, link.id));
     return count;

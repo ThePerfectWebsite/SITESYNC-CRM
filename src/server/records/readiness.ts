@@ -179,7 +179,10 @@ export async function checkBlockers(db: DbOrTx, projectId: string, proposed?: Pr
     return { commitSha, blockers: [], notes: [`GitHub checks unavailable for ${repoName}: the ${integration.name} integration is ${integration.archivedAt ? "archived" : integration.health}.`] };
   }
   if (!commitSha) {
-    return { commitSha, blockers: [], notes: [`GitHub checks unavailable for ${repoName}: it hasn't been synced yet.`] };
+    const note = link.lastSyncedAt
+      ? `${repoName} has no commits on ${link.productionBranch} yet, so there are no checks to count.`
+      : `GitHub checks unavailable for ${repoName}: it hasn't been synced yet.`;
+    return { commitSha, blockers: [], notes: [note] };
   }
   const checks = await latestChecksForCommit(db, link.id, commitSha);
   const notes = checks.length ? [] : [`No GitHub checks reported for ${repoName} at ${commitSha.slice(0, 7)}.`];

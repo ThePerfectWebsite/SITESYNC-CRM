@@ -14,7 +14,7 @@ These permissions are the minimum expected for the endpoints SiteSync calls:
 - `GET /repos/{owner}/{repo}`;
 - `.../branches/{branch}`, `.../commits`, `.../pulls` and `.../commits/{sha}/check-runs`.
 
-They haven't yet been checked against a live token. If **Test connection** or a sync reports that GitHub refused the token, add the permission named in the error.
+Checked live (2026-11-03): with these permissions, a fine-grained token can authenticate, read a repository and list its pull requests. A private repository the token wasn't granted answers 404, which SiteSync reports as "GitHub can't see owner/repo". Reading commits and check runs hasn't yet been tried live against a repository that has them. If a sync reports that GitHub refused the token, add the permission named in the error.
 
 A classic token with the `repo` scope also works but grants write access; prefer fine-grained.
 
