@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { Circle, CircleCheck, CircleDot, CirclePause, CircleSlash, Info, type LucideIcon } from "lucide-react";
+import { DeploymentState, ExternalUrl, providerName } from "@/components/deployments";
+import { ActionButton } from "@/components/forms/action-button";
 import { Details, Section } from "@/components/page";
 import { Card, CardContent } from "@/components/ui/card";
 import { formatDate, formatDateTime } from "@/lib/format";
@@ -9,12 +11,13 @@ import { isUuid } from "@/lib/ids";
 import { cn } from "@/lib/utils";
 import { requireSession } from "@/server/auth/next";
 import { db } from "@/server/db";
+import { liveAndLatestPreview } from "@/server/integrations/hosting-sync";
 import { getProject } from "@/server/records/projects";
 import { computeReadiness } from "@/server/records/readiness";
-import { noDeploymentsYet } from "@/server/stages/deployment-facts";
+import { databaseDeploymentFacts } from "@/server/stages/deployment-facts";
 import { LIVE_EXPLANATION, NO_HOSTING_EXPLANATION, linearStages } from "@/server/stages/machine";
 import { loadStageState } from "@/server/stages/service";
-import { moveStageAction } from "../actions";
+import { confirmLiveAction, moveStageAction } from "../actions";
 import { ReadinessPanel } from "./readiness-panel";
 import { MoveStageForm, QuickMove, RestoreForm } from "./stage-controls";
 
@@ -43,7 +46,16 @@ export default async function ProjectOverviewPage({ params }: PageProps<"/projec
   const index = linear.findIndex((s) => s.id === current.id);
   const next = index >= 0 ? linear[index + 1] : undefined;
   const heldFrom = linear.find((s) => s.id === state.heldFromId);
-  const hasHosting = await noDeploymentsYet.hasIntegrationBackedProductionLink(database, project.websiteId);
+  const [hasHosting, deploys] = await Promise.all([
+    databaseDeploymentFacts.hasIntegrationBackedProductionLink(database, project.websiteId),
+    liveAndLatestPreview(database, project.websiteId),
+  ]);
+  // OQ-2: at Ready to Deploy, a live deploy the provider published on its own can be confirmed as the release.
+  const offerLive =
+    hasHosting &&
+    current.role === "ready_to_deploy" &&
+    deploys.live?.origin === "provider_observed" &&
+    (!deploys.live.projectId || deploys.live.projectId === id);
   const liveStage = linear.find((s) => s.role === "live");
   const liveUnreached = liveStage?.status === "upcoming";
   const move = moveStageAction.bind(null, id);
@@ -133,13 +145,42 @@ export default async function ProjectOverviewPage({ params }: PageProps<"/projec
         </Section>
 
         <Section title="Readiness">
-          <ReadinessPanel projectId={id} readiness={readiness} readOnly={Boolean(project.archivedAt)} />
+          <ReadinessPanel projectId={id} websiteId={project.websiteId} readiness={readiness} readOnly={Boolean(project.archivedAt)} />
         </Section>
 
         <Section title="Deployments">
-          <p className="text-sm text-muted-foreground">
-            No deployments. Current live and latest preview deploys appear here once a hosting provider is connected.
-          </p>
+          {offerLive && deploys.live ? (
+            <div className="grid gap-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-3 text-sm text-blue-950">
+              <p>
+                <strong>The host published a production deploy that SiteSync didn&apos;t initiate.</strong> If this is the
+                release for this project, mark it Live: the host has confirmed it, so the move is recorded as provider-confirmed.
+              </p>
+              <div>
+                <ActionButton
+                  action={confirmLiveAction.bind(null, id, deploys.live.id)}
+                  label="Mark Live with this deploy"
+                  variant="default"
+                  pendingLabel="Marking Live…"
+                />
+              </div>
+            </div>
+          ) : null}
+          {deploys.live || deploys.preview ? (
+            <Card>
+              <CardContent>
+                <Details
+                  items={[
+                    ["Live now", deploys.live ? <DeployLine key="l" deployment={deploys.live} /> : "—"],
+                    ["Latest preview", deploys.preview ? <DeployLine key="p" deployment={deploys.preview} /> : "—"],
+                  ]}
+                />
+              </CardContent>
+            </Card>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              No deployments. Link this website to a host on its page to see the live and latest preview deploys here.
+            </p>
+          )}
         </Section>
       </div>
 
@@ -183,5 +224,21 @@ function Callout({ icon: Icon, children }: { icon: LucideIcon; children: React.R
       <Icon className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
       <p>{children}</p>
     </div>
+  );
+}
+
+function DeployLine({
+  deployment,
+}: {
+  deployment: { state: string; commitSha: string | null; deployUrl: string | null; providerCreatedAt: Date | null; provider: string };
+}) {
+  return (
+    <span className="flex flex-wrap items-center gap-2">
+      <DeploymentState state={deployment.state} />
+      <span className="text-muted-foreground">{providerName(deployment.provider)}</span>
+      {deployment.commitSha ? <code className="font-mono text-xs">{deployment.commitSha.slice(0, 7)}</code> : null}
+      {deployment.deployUrl ? <ExternalUrl href={deployment.deployUrl}>{deployment.deployUrl.replace(/^https:\/\//, "")}</ExternalUrl> : null}
+      <span className="text-xs text-muted-foreground">{formatDateTime(deployment.providerCreatedAt)}</span>
+    </span>
   );
 }

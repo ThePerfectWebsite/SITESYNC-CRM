@@ -11,7 +11,7 @@ import { db } from "@/server/db";
 import { listChecklist } from "@/server/records/checklist";
 import { getProject } from "@/server/records/projects";
 import { websiteOptions } from "@/server/records/websites";
-import { noDeploymentsYet } from "@/server/stages/deployment-facts";
+import { databaseDeploymentFacts } from "@/server/stages/deployment-facts";
 import { loadStageState } from "@/server/stages/service";
 import { moveStageAction, updateProjectAction } from "../../actions";
 import { ProjectForm } from "../../project-form";
@@ -39,7 +39,7 @@ export default async function ProjectSettingsPage({ params, searchParams }: Page
   const [websites, state, hasDeployments, checklist] = await Promise.all([
     websiteOptions(database),
     loadStageState(database, project),
-    noDeploymentsYet.hasDeployments(database, id),
+    databaseDeploymentFacts.hasDeployments(database, id),
     listChecklist(database, id, true),
   ]);
   const current = state.stages.find((s) => s.status === "current")!;

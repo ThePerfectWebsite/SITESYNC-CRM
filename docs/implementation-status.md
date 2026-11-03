@@ -7,11 +7,93 @@
 | 1 — Core records | **Done** | 2026-11-03 |
 | 2 — Work tracking | **Done** | 2026-11-03 |
 | 3a — GitHub read sync | **Done** | 2026-11-03 |
-| 3b — Hosting read sync | Not started (ready) | |
-| 4 — Approval-gated deployment | Not started | |
+| 3b — Hosting read sync | **Done** | 2026-11-03 |
+| 4 — Approval-gated deployment | Not started (ready) | |
 | 5 — Operations & polish | Not started | |
 
-**Current phase for the next session:** Phase 3b — Hosting read sync.
+**Current phase for the next session:** Phase 4 — Approval-gated deployment.
+
+---
+
+## Handoff — Phase 3b (2026-11-03)
+
+### 1. Phase completed and key areas changed
+Phase 3b — Hosting read sync. Committed on `main` after `3a82b13`. The operator chose **Cloudflare Pages** as the host during this phase, so it was added as a provider alongside Netlify and Vercel (decision 0010, spec amended).
+- **Migrations:**
+  - `0009_hosting_sync` (generated):
+    - `hosting_links` and `deployments` (spec §3.21–§3.22, plus `provider_updated_at`);
+    - one production host per website; deployment identity, idempotency and approval unique keys;
+    - `cloudflare` added to the provider checks (widened, data-preserving);
+    - the deferred FKs `stage_history.deployment_id` and `changes.shipped_in_deployment_id` (decision 0007).
+  - `0010_hosting_sync_triggers_grants` (hand-written):
+    - a deployment's website must match its link's;
+    - a link's current deployment must be one of its own (deferrable composite FK);
+    - `updated_at` triggers;
+    - `SELECT, INSERT, UPDATE` only (deployments are history).
+- **Adapters** (`src/server/providers/hosting.ts`): Cloudflare Pages, Netlify and Vercel, each with:
+  - a §5.2 state-mapping function;
+  - auto-publish detection (§1.1);
+  - current-production detection.
+
+  `api.cloudflare.com` was added to the `providerFetch` allowlist.
+- **Services:**
+  - `integrations/hosting-sync.ts`:
+    - hosting links: integration-backed or manual;
+    - sync: last deploys, an order-tolerant upsert, the provider's current deploy marked published and the old one superseded, auto-publish and domain recorded;
+    - poll due-ness;
+    - queries for history, live vs latest preview, and dashboard alerts.
+  - `integrations/service.ts`: provider-generic adapters, health labels and test connection; a Cloudflare account ID is required.
+  - `stages/deployment-facts.ts`: `databaseDeploymentFacts`, now used by the app.
+  - `stages/service.ts`: `confirmLiveFromProviderDeploy` (OQ-2), which shares an in-transaction `go_live` with `systemGoLive`.
+  - `records/readiness.ts`: `hosting:missing` (unwaivable) and `preview:<id>`.
+- **Jobs:** `hosting-sync` (stately per link) and the `hosting-poll` cron, with `enqueueHostingSync` and the inline fallback.
+- **Screens:**
+  - integrations: choose a provider, with per-provider hints; webhooks only for GitHub.
+  - website: hosting panels (auto-publish state, §1.1 caveat with provider-specific steps, live now, refresh/unlink), "Link a host" (connection or manual record), deploy history.
+  - project Deployments tab (13).
+  - overview: live vs latest preview, plus the OQ-2 "Mark Live with this deploy" prompt.
+  - readiness: links to fix each blocker.
+  - dashboard: deployment alerts and sync errors.
+- **Docs:** decision 0010 (verified endpoints, mappings, lock settings, gaps), `docs/hosting.md`, spec amendment, README, `.env.example`.
+
+### 2. Commands run and actual results
+- `npm run lint` → clean. `npm run typecheck` → passes.
+- `npm run db:migrate -- --test` → 11/11. (Dev DB: see §3.)
+- `npm test` → **16 files, 305 tests passed**. New in Phase 3b:
+  - `hosting` unit tests (46): every documented state for all three providers, supersede rules, auto-publish detection, normalization, and the Cloudflare adapter's paths, account ID, page size and truncation.
+  - `hosting` integration tests (16):
+    - link rules (one production host, project ID required, GitHub isn't a host, blank form fields);
+    - the DB integrity FKs; no deletes;
+    - sync (published/superseded/building/failed, auto-publish, domain, health); live deploy moving; out-of-order upserts; 404 message; manual records not synced; poll due-ness;
+    - live vs preview and alerts;
+    - database facts (skipping over Live refused with an integration-backed host, allowed with a manual one);
+    - OQ-2 (attribution + system `go_live`, refusals roll back);
+    - readiness (`hosting:missing` unwaivable, any host clears it; `preview_not_ready` waivable).
+  - Existing readiness tests now give their projects a production host. The `go_live` tests use real deployment rows, because the FK exists now.
+- `npm run test:e2e` → **30 passed**, including 3 new hosting tests:
+  - adding a Cloudflare integration requires a valid account ID;
+  - linking a Cloudflare host shows the caveat with Cloudflare's own steps, and a second production host is refused;
+  - the hosting blocker is unwaivable, links to the website, and the Deployments tab shows an empty state.
+- Screens checked by screenshot.
+
+### 3. Setup steps and env var names
+- `npm run db:migrate` applies `0009`/`0010` (done on this machine: dev DB 11/11).
+- Optional env var, name of your choice: `CLOUDFLARE_API_TOKEN` (Pages Read). See `docs/hosting.md`.
+
+### 4. Credentials/config the operator still needs to provide
+None required. To use Cloudflare: a Pages Read API token in `.env`, your account ID, then add the integration and link a website's Pages project.
+
+### 5. Known limitations / unmet criteria
+- **Not yet tried against a live Cloudflare, Netlify or Vercel account.** The decision 0010 gaps still need confirming: Cloudflare `canonical_deployment` after a rollback, Cloudflare's `per_page` maximum (25 used), and Vercel's `targets.production`.
+- Every project is now blocked until its website has a production host, which is the intended spec §6 behaviour. A manual host record clears the blocker.
+- On Cloudflare, "auto-deploy off" means production isn't built on push at all. Phase 4 must therefore create or promote the production deploy itself; verify the mechanism then.
+- `deployments.approval_id` has no FK until `production_approvals` exists (Phase 4). No SiteSync-initiated deploys exist yet.
+- During one E2E run the job runner logged 7 errors that printed as `[object Object]`. They didn't recur in 5 later runs. `describeError` now prints error objects (redacted), so any recurrence will be readable.
+
+### 6. Next phase and decisions needed first
+Next: **Phase 4 — Approval-gated deployment.** Before starting:
+- Decide the release flow on Cloudflare: approve, then SiteSync triggers a production deployment of the approved commit (or rolls back to a specific deploy), with automatic production deploys off. The endpoints need verifying (spec §8.1; Cloudflare wasn't in the original spec).
+- Live testing needs a Cloudflare token with **Pages Write** for dispatch, which is more than read-only.
 
 ---
 

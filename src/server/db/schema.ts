@@ -437,8 +437,8 @@ export const projectStages = pgTable(
   ],
 );
 
-// §3.13 — append-only (decision 0002). deployment_id has no FK yet: the
-// deployments table arrives in Phase 3b, which adds it (decision 0007).
+// §3.13 — append-only (decision 0002). deployment_id references deployments
+// (FK added in Phase 3b, decision 0007).
 export const stageHistory = pgTable(
   "stage_history",
   {
@@ -457,7 +457,7 @@ export const stageHistory = pgTable(
     actorType: text("actor_type").$type<"user" | "system">().notNull(),
     actorUserId: uuid("actor_user_id").references(() => users.id, { onDelete: "restrict" }),
     reason: text("reason"),
-    deploymentId: uuid("deployment_id"),
+    deploymentId: uuid("deployment_id").references((): AnyPgColumn => deployments.id, { onDelete: "restrict" }),
     auditEventId: uuid("audit_event_id")
       .notNull()
       .references(() => auditEvents.id, { onDelete: "restrict" }),
@@ -569,7 +569,7 @@ export const tasks = pgTable(
   ],
 );
 
-// §3.15 — shipped_in_deployment_id gets its FK when deployments exists (decision 0007).
+// §3.15 — shipped_in_deployment_id references deployments (FK added in Phase 3b, decision 0007).
 export const changes = pgTable(
   "changes",
   {
@@ -585,7 +585,9 @@ export const changes = pgTable(
       onDelete: "restrict",
     }),
     taskId: uuid("task_id"),
-    shippedInDeploymentId: uuid("shipped_in_deployment_id"),
+    shippedInDeploymentId: uuid("shipped_in_deployment_id").references((): AnyPgColumn => deployments.id, {
+      onDelete: "restrict",
+    }),
     archivedAt: archivedAt(),
     archivedBy: archivedBy(),
     createdAt: createdAt(),
@@ -685,7 +687,7 @@ export const readinessWaivers = pgTable(
 // ---------------------------------------------------------------------------
 // Phase 3a — GitHub read sync (spec §3.18–§3.20, §3.24)
 
-export const PROVIDERS = ["github", "netlify", "vercel"] as const;
+export const PROVIDERS = ["github", "netlify", "vercel", "cloudflare"] as const;
 export const INTEGRATION_HEALTH = ["unconfigured", "ok", "degraded", "error", "disabled"] as const;
 export const REPOSITORY_EVENT_TYPES = [
   "commit",
@@ -880,5 +882,179 @@ export const webhookInbox = pgTable(
     check("webhook_inbox_last_error_length", sql`length(${t.lastError}) <= 2000`),
     uniqueIndex("webhook_inbox_delivery_key").on(t.provider, t.deliveryId),
     index("webhook_inbox_status_idx").on(t.status, t.nextAttemptAt),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// Phase 3b — hosting read sync (spec §3.21–§3.22, §5.2)
+
+export const HOSTING_PROVIDERS = ["netlify", "vercel", "cloudflare", "other"] as const;
+export const ENVIRONMENTS = ["production", "preview", "staging"] as const;
+export const AUTO_PUBLISH = ["enabled", "locked", "disabled", "unknown"] as const;
+export const DEPLOYMENT_ORIGINS = ["provider_observed", "sitesync_initiated", "manual_record"] as const;
+export const DEPLOYMENT_KINDS = ["deploy", "promote", "rollback"] as const;
+export const DEPLOYMENT_STATES = [
+  "queued",
+  "building",
+  "ready",
+  "published",
+  "failed",
+  "canceled",
+  "superseded",
+  "unknown",
+] as const;
+export const DISPATCH_STATES = [
+  "pending",
+  "dispatched",
+  "dispatch_failed",
+  "confirming",
+  "confirmed_success",
+  "confirmed_failure",
+  "timed_out",
+] as const;
+
+export type HostingProvider = (typeof HOSTING_PROVIDERS)[number];
+export type Environment = (typeof ENVIRONMENTS)[number];
+export type AutoPublish = (typeof AUTO_PUBLISH)[number];
+export type DeploymentOrigin = (typeof DEPLOYMENT_ORIGINS)[number];
+export type DeploymentState = (typeof DEPLOYMENT_STATES)[number];
+
+const HTTPS_URL = (column: AnyPgColumn) => sql`length(${column}) <= 2048 AND ${column} ~ '^https://'`;
+
+// §3.21 — current_deployment_id's FK is deferrable and added in the hand-written migration.
+export const hostingLinks = pgTable(
+  "hosting_links",
+  {
+    id: id(),
+    websiteId: uuid("website_id")
+      .notNull()
+      .references(() => websites.id, { onDelete: "restrict" }),
+    integrationId: uuid("integration_id").references(() => integrations.id, { onDelete: "restrict" }),
+    provider: text("provider").$type<HostingProvider>().notNull(),
+    providerProjectId: text("provider_project_id"),
+    providerProjectName: text("provider_project_name"),
+    environment: text("environment").$type<Environment>().notNull(),
+    domain: text("domain"),
+    repositoryLinkId: uuid("repository_link_id").references(() => repositoryLinks.id, { onDelete: "restrict" }),
+    autoPublish: text("auto_publish").$type<AutoPublish>().notNull().default("unknown"),
+    autoPublishCheckedAt: tsNull("auto_publish_checked_at"),
+    currentDeploymentId: uuid("current_deployment_id"),
+    lastSyncedAt: tsNull("last_synced_at"),
+    syncCursor: jsonb("sync_cursor"),
+    archivedAt: archivedAt(),
+    archivedBy: archivedBy(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    check("hosting_links_provider_check", sql`${t.provider} IN (${inList(HOSTING_PROVIDERS)})`),
+    check(
+      "hosting_links_provider_project_required",
+      sql`${t.integrationId} IS NULL OR ${t.providerProjectId} IS NOT NULL`,
+    ),
+    check("hosting_links_provider_project_id_length", sql`length(${t.providerProjectId}) BETWEEN 1 AND 200`),
+    check("hosting_links_provider_project_name_length", sql`length(${t.providerProjectName}) <= 200`),
+    check("hosting_links_environment_check", sql`${t.environment} IN (${inList(ENVIRONMENTS)})`),
+    check(
+      "hosting_links_domain_format",
+      sql`length(${t.domain}) <= 253 AND ${t.domain} ~ ${sql.raw(`'${HOSTNAME_RE}'`)}`,
+    ),
+    check("hosting_links_auto_publish_check", sql`${t.autoPublish} IN (${inList(AUTO_PUBLISH)})`),
+    check("hosting_links_sync_cursor_size", sql`octet_length(${t.syncCursor}::text) <= 4096`),
+    uniqueIndex("hosting_links_provider_project_key")
+      .on(t.integrationId, t.providerProjectId, t.environment)
+      .where(sql`${t.archivedAt} IS NULL AND ${t.integrationId} IS NOT NULL`),
+    // OQ-4: one production target per website in v1.
+    uniqueIndex("hosting_links_one_production_key")
+      .on(t.websiteId)
+      .where(sql`${t.environment} = 'production' AND ${t.archivedAt} IS NULL`),
+    index("hosting_links_website_idx").on(t.websiteId),
+  ],
+);
+
+// §3.22 — history: never deleted or archived. approval_id gets its FK in Phase 4
+// (production_approvals); provider_updated_at is an addition for order-tolerant
+// upserts (§5.2, decision 0010).
+export const deployments = pgTable(
+  "deployments",
+  {
+    id: id(),
+    hostingLinkId: uuid("hosting_link_id")
+      .notNull()
+      .references(() => hostingLinks.id, { onDelete: "restrict" }),
+    websiteId: uuid("website_id")
+      .notNull()
+      .references(() => websites.id, { onDelete: "restrict" }),
+    projectId: uuid("project_id").references(() => projects.id, { onDelete: "restrict" }),
+    provider: text("provider").$type<HostingProvider>().notNull(),
+    providerDeploymentId: text("provider_deployment_id"),
+    environment: text("environment").$type<Environment>().notNull(),
+    origin: text("origin").$type<DeploymentOrigin>().notNull(),
+    kind: text("kind").$type<(typeof DEPLOYMENT_KINDS)[number]>().notNull().default("deploy"),
+    state: text("state").$type<DeploymentState>().notNull(),
+    providerState: text("provider_state"),
+    dispatchState: text("dispatch_state").$type<(typeof DISPATCH_STATES)[number]>(),
+    commitSha: text("commit_sha"),
+    branch: text("branch"),
+    deployUrl: text("deploy_url"),
+    providerCreatedAt: tsNull("provider_created_at"),
+    providerUpdatedAt: tsNull("provider_updated_at"),
+    readyAt: tsNull("ready_at"),
+    publishedAt: tsNull("published_at"),
+    lastConfirmedAt: tsNull("last_confirmed_at"),
+    confirmationSource: text("confirmation_source").$type<"provider">(),
+    errorSummary: text("error_summary"),
+    idempotencyKey: uuid("idempotency_key"),
+    approvalId: uuid("approval_id"),
+    targetDeploymentId: uuid("target_deployment_id").references((): AnyPgColumn => deployments.id, {
+      onDelete: "restrict",
+    }),
+    previousLiveDeploymentId: uuid("previous_live_deployment_id").references((): AnyPgColumn => deployments.id, {
+      onDelete: "restrict",
+    }),
+    initiatedBy: uuid("initiated_by").references(() => users.id, { onDelete: "restrict" }),
+    snapshot: jsonb("snapshot").notNull().default({}),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    check("deployments_provider_check", sql`${t.provider} IN (${inList(HOSTING_PROVIDERS)})`),
+    check("deployments_provider_deployment_id_length", sql`length(${t.providerDeploymentId}) BETWEEN 1 AND 200`),
+    check("deployments_environment_check", sql`${t.environment} IN (${inList(ENVIRONMENTS)})`),
+    check("deployments_origin_check", sql`${t.origin} IN (${inList(DEPLOYMENT_ORIGINS)})`),
+    check("deployments_kind_check", sql`${t.kind} IN (${inList(DEPLOYMENT_KINDS)})`),
+    check("deployments_state_check", sql`${t.state} IN (${inList(DEPLOYMENT_STATES)})`),
+    check("deployments_provider_state_length", sql`length(${t.providerState}) <= 50`),
+    check(
+      "deployments_dispatch_state_check",
+      sql`(${t.origin} = 'sitesync_initiated') = (${t.dispatchState} IS NOT NULL) AND (${t.dispatchState} IS NULL OR ${t.dispatchState} IN (${inList(DISPATCH_STATES)}))`,
+    ),
+    check("deployments_commit_sha_format", sql`${t.commitSha} ~ '^[0-9a-f]{40}$'`),
+    check("deployments_branch_length", sql`length(${t.branch}) <= 255`),
+    check("deployments_deploy_url_format", HTTPS_URL(t.deployUrl)),
+    check(
+      "deployments_confirmation_source_check",
+      sql`(${t.confirmationSource} IS NULL OR ${t.confirmationSource} = 'provider') AND (${t.origin} <> 'manual_record' OR ${t.confirmationSource} IS NULL)`,
+    ),
+    check("deployments_error_summary_length", sql`length(${t.errorSummary}) <= 2000`),
+    check(
+      "deployments_initiated_needs_idempotency_key",
+      sql`${t.origin} <> 'sitesync_initiated' OR ${t.idempotencyKey} IS NOT NULL`,
+    ),
+    // Production SiteSync deploys always carry an approval (spec §3.22).
+    check(
+      "deployments_production_needs_approval",
+      sql`${t.origin} <> 'sitesync_initiated' OR ${t.approvalId} IS NOT NULL OR ${t.environment} <> 'production'`,
+    ),
+    check("deployments_snapshot_size", sql`octet_length(${t.snapshot}::text) <= 65536`),
+    uniqueIndex("deployments_provider_deployment_key")
+      .on(t.provider, t.providerDeploymentId)
+      .where(sql`${t.providerDeploymentId} IS NOT NULL`),
+    uniqueIndex("deployments_idempotency_key").on(t.idempotencyKey),
+    uniqueIndex("deployments_approval_key").on(t.approvalId),
+    index("deployments_link_created_idx").on(t.hostingLinkId, t.providerCreatedAt.desc()),
+    index("deployments_project_created_idx").on(t.projectId, t.createdAt.desc()),
+    index("deployments_commit_idx").on(t.commitSha),
+    index("deployments_in_flight_idx").on(t.state).where(sql`${t.state} IN ('queued','building')`),
   ],
 );

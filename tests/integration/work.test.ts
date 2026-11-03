@@ -30,7 +30,7 @@ import {
   updateTask,
 } from "@/server/records/tasks";
 import { loadStages, transitionStage } from "@/server/stages/service";
-import { createAdmin, makeClient, makeProject } from "../support/factories";
+import { createAdmin, makeClient, makeManualProductionHost, makeProject } from "../support/factories";
 import { appDb, ownerClient, resetTestDatabase } from "../support/test-db";
 
 let db: Db;
@@ -276,13 +276,15 @@ describe("release checklist", () => {
 
 describe("readiness", () => {
   async function readyProject() {
-    const { projectId } = await makeProject(db, actor);
+    const { projectId, websiteId } = await makeProject(db, actor);
+    await makeManualProductionHost(db, actor, websiteId);
     for (const item of await listChecklist(db, projectId)) await setChecklistItemChecked(db, actor, item.id, true);
     return projectId;
   }
 
   it("a fresh project is blocked by its required checklist items", async () => {
-    const { projectId } = await makeProject(db, actor);
+    const { projectId, websiteId } = await makeProject(db, actor);
+    await makeManualProductionHost(db, actor, websiteId);
     const readiness = await computeReadiness(db, projectId);
     expect(readiness.ready).toBe(false);
     expect(readiness.blockers.every((b) => b.type === "checklist_item")).toBe(true);
@@ -312,7 +314,8 @@ describe("readiness", () => {
   });
 
   it("non-required and archived checklist items never block", async () => {
-    const { projectId } = await makeProject(db, actor);
+    const { projectId, websiteId } = await makeProject(db, actor);
+    await makeManualProductionHost(db, actor, websiteId);
     const items = await listChecklist(db, projectId);
     for (const item of items.slice(1)) await setChecklistItemChecked(db, actor, item.id, true);
     await archiveChecklistItem(db, actor, items[0]!.id);
@@ -320,7 +323,8 @@ describe("readiness", () => {
   });
 
   it("a waiver needs a reason, applies to that blocker only, and is audited and revocable", async () => {
-    const { projectId } = await makeProject(db, actor);
+    const { projectId, websiteId } = await makeProject(db, actor);
+    await makeManualProductionHost(db, actor, websiteId);
     const items = await listChecklist(db, projectId);
     for (const item of items.slice(1)) await setChecklistItemChecked(db, actor, item.id, true);
     const key = `checklist:${items[0]!.key}`;
@@ -355,7 +359,8 @@ describe("readiness", () => {
   });
 
   it("a commit-scoped waiver only applies to that commit", async () => {
-    const { projectId } = await makeProject(db, actor);
+    const { projectId, websiteId } = await makeProject(db, actor);
+    await makeManualProductionHost(db, actor, websiteId);
     const items = await listChecklist(db, projectId);
     for (const item of items.slice(1)) await setChecklistItemChecked(db, actor, item.id, true);
     const sha = "0123456789abcdef0123456789abcdef01234567";

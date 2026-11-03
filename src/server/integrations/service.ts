@@ -7,6 +7,7 @@ import { writeAudit } from "../audit";
 import type { Db, DbOrTx } from "../db/client";
 import { integrations, repositoryLinks, type IntegrationHealth } from "../db/schema";
 import { createGitHubAdapter, type SourceAdapter } from "../providers/github";
+import { createHostingAdapter, type HostingAdapter } from "../providers/hosting";
 import { ProviderError, type RateLimit } from "../providers/http";
 import type { FetchImpl } from "../providers/fetch";
 import { describeError, redactString } from "../redact";
@@ -71,7 +72,11 @@ export const integrationSchema = z
     }
   });
 
-export const newIntegrationSchema = z.object({ provider: z.enum(["github"], { message: "Choose a provider." }) });
+export const newIntegrationSchema = z.object({
+  provider: z.enum(["github", "netlify", "vercel", "cloudflare"], { message: "Choose a provider." }),
+});
+
+export const PROVIDER_LABELS = { github: "GitHub", netlify: "Netlify", vercel: "Vercel", cloudflare: "Cloudflare" } as const;
 
 export type IntegrationInput = RawInput<typeof integrationSchema>;
 type IntegrationRow = typeof integrations.$inferSelect;
@@ -97,6 +102,13 @@ function snapshot(row: IntegrationRow) {
 
 const nameTaken = () => invalidField("name", "Another integration for this provider uses this name.");
 
+/** Cloudflare API paths are per account, so its integrations need a valid account ID. */
+function checkAccountRef(provider: string, accountRef: string | null) {
+  if (provider === "cloudflare" && !/^[0-9a-f]{32}$/i.test(accountRef ?? "")) {
+    throw invalidField("accountRef", "Enter your Cloudflare account ID (32 characters, from the dashboard URL or overview page).");
+  }
+}
+
 export async function createIntegration(
   db: Db,
   actor: Actor,
@@ -104,6 +116,7 @@ export async function createIntegration(
 ): Promise<string> {
   const { provider } = parseInput(newIntegrationSchema, input);
   const data = parseInput(integrationSchema, input);
+  checkAccountRef(provider, data.accountRef);
   try {
     return await db.transaction(async (tx) => {
       const [row] = await tx
@@ -115,7 +128,7 @@ export async function createIntegration(
         action: "integration.created",
         subjectType: "integration",
         subjectId: row!.id,
-        summary: `GitHub integration ${row!.name} added`,
+        summary: `${PROVIDER_LABELS[provider]} integration ${row!.name} added`,
         after: snapshot(row!),
         requestId: actor.requestId,
       });
@@ -138,6 +151,7 @@ export async function updateIntegration(db: Db, actor: Actor, id: string, input:
   try {
     await db.transaction(async (tx) => {
       const before = await lockIntegration(tx, id);
+      checkAccountRef(before.provider, data.accountRef);
       if (before.archivedAt) throw new DomainError("conflict", "Restore this integration before editing it.");
       // A changed token env var invalidates the last test.
       const tokenChanged = data.tokenEnvVar !== before.tokenEnvVar;
@@ -220,6 +234,7 @@ export type CallOutcome =
 export function nextHealth(
   current: IntegrationHealth,
   outcome: CallOutcome,
+  providerLabel = "GitHub",
 ): { health: IntegrationHealth; detail: string | null } {
   if (current === "disabled") return { health: "disabled", detail: "Disabled by the operator." };
   if (outcome.ok) return { health: "ok", detail: outcome.detail ?? null };
@@ -227,11 +242,11 @@ export function nextHealth(
   if (error instanceof MissingTokenError) return { health: "unconfigured", detail: error.message };
   if (error instanceof ProviderError) {
     if (error.kind === "auth") {
-      return { health: "error", detail: "GitHub refused the token (expired, revoked, or missing permissions)." };
+      return { health: "error", detail: `${providerLabel} refused the token (expired, revoked, or missing permissions).` };
     }
     if (error.kind === "rate_limited") {
       const until = error.retryAt ? ` until ${error.retryAt.toISOString()}` : "";
-      return { health: "degraded", detail: `Rate limited by GitHub${until}.` };
+      return { health: "degraded", detail: `Rate limited by ${providerLabel}${until}.` };
     }
   }
   // Token presumably still valid: a sync failure degrades, it doesn't break.
@@ -246,22 +261,36 @@ export class MissingTokenError extends Error {
   }
 }
 
-export type AdapterFactory = (token: string, onRateLimit: (rateLimit: RateLimit) => void) => SourceAdapter;
+export type AdapterFactory<A = SourceAdapter> = (token: string, onRateLimit: (rateLimit: RateLimit) => void) => A;
 
 /** Default: the real GitHub adapter (tests pass a fake fetch). */
 export function githubAdapterFactory(fetchImpl?: FetchImpl): AdapterFactory {
   return (token, onRateLimit) => createGitHubAdapter({ token, fetchImpl, onRateLimit });
 }
 
+/** The real Netlify/Vercel adapter for an integration (tests pass a fake fetch). */
+export function hostingAdapterFactory(
+  integration: Pick<IntegrationRow, "provider" | "accountRef">,
+  fetchImpl?: FetchImpl,
+): AdapterFactory<HostingAdapter> {
+  if (integration.provider === "github") throw new Error("GitHub isn't a hosting provider");
+  const provider = integration.provider;
+  return (token, onRateLimit) => createHostingAdapter(provider, { token, accountRef: integration.accountRef, fetchImpl, onRateLimit });
+}
+
+function defaultAdapterFactory(integration: IntegrationRow): AdapterFactory<{ testConnection(): Promise<{ login: string }> }> {
+  return integration.provider === "github" ? githubAdapterFactory() : hostingAdapterFactory(integration);
+}
+
 /**
  * Runs `fn` with an adapter for the integration and records the outcome:
  * health, last error, rate-limit state. Health changes are audited (system actor).
  */
-export async function withIntegrationAdapter<T>(
+export async function withIntegrationAdapter<T, A = SourceAdapter>(
   db: Db,
   integration: IntegrationRow,
-  factory: AdapterFactory,
-  fn: (adapter: SourceAdapter) => Promise<T>,
+  factory: AdapterFactory<A>,
+  fn: (adapter: A) => Promise<T>,
   options: { kind: "test" | "sync"; now?: Date } = { kind: "sync" },
 ): Promise<{ ok: true; value: T } | { ok: false; error: unknown }> {
   let rateLimit: RateLimit | null = null;
@@ -279,7 +308,7 @@ export async function withIntegrationAdapter<T>(
 
   const now = options.now ?? new Date();
   const outcome: CallOutcome = result.ok ? { ok: true } : { ok: false, error: result.error };
-  const { health, detail } = nextHealth(integration.health, outcome);
+  const { health, detail } = nextHealth(integration.health, outcome, PROVIDER_LABELS[integration.provider]);
   const rate = rateLimit as RateLimit | null;
   await db.transaction(async (tx) => {
     await tx
@@ -317,17 +346,22 @@ export async function testIntegration(
   db: Db,
   actor: Actor,
   id: string,
-  factory: AdapterFactory = githubAdapterFactory(),
+  factory?: AdapterFactory<{ testConnection(): Promise<{ login: string }> }>,
 ): Promise<{ ok: boolean; message: string }> {
   const integration = await getIntegration(db, id);
   if (!integration || integration.archivedAt) throw notFound("Integration");
   if (integration.health === "disabled") throw new DomainError("conflict", "Enable this integration first.");
-  const result = await withIntegrationAdapter(db, integration, factory, (adapter) => adapter.testConnection(), {
-    kind: "test",
-  });
+  const label = PROVIDER_LABELS[integration.provider];
+  const result = await withIntegrationAdapter(
+    db,
+    integration,
+    factory ?? defaultAdapterFactory(integration),
+    (adapter) => adapter.testConnection(),
+    { kind: "test" },
+  );
   const message = result.ok
-    ? `Connected to GitHub as ${result.value.login}.`
-    : nextHealth(integration.health, { ok: false, error: result.error }).detail ?? "Connection failed.";
+    ? `Connected to ${label} as ${result.value.login}.`
+    : nextHealth(integration.health, { ok: false, error: result.error }, label).detail ?? "Connection failed.";
   await writeAudit(db, {
     actor: auditActor(actor),
     action: "integration.tested",

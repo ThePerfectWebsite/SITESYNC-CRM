@@ -64,6 +64,20 @@
       "when": 1793714026670,
       "tag": "0008_github_sync_triggers_grants",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1793728629039,
+      "tag": "0009_hosting_sync",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1793728631615,
+      "tag": "0010_hosting_sync_triggers_grants",
+      "breakpoints": true
     }
   ]
 }

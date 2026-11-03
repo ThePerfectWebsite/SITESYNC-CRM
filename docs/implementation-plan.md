@@ -48,7 +48,7 @@ Build: `integrations`, `repository_links`, `repository_events`, `webhook_inbox`;
 
 Tests (MSW/nock, no real network — a test guard fails any un-mocked request): adapter normalization, pagination bounds, 429/`Retry-After` backoff, auth error → health `error`; upsert idempotency; webhook HMAC valid/invalid/missing, oversize, duplicate delivery, non-allowlisted, retry/dead-letter, replay; SSRF guard rejects non-allowlisted host; disconnected integration doesn't block manual flows.
 
-## Phase 3b — Hosting read sync
+## Phase 3b — Hosting read sync ✅ (2026-11-03)
 
 Build: `hosting_links`, `deployments` (read side); Netlify adapter then Vercel; state mapping (§5.2) with tests; auto-publish detection + caveat UI (§1.1); website deploy history (7) and project deployments tab (13); dashboard deployment alerts and sync errors. Decision record with verified provider endpoints and the settings that prevent auto-deploy.
 

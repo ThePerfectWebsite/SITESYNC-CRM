@@ -1,9 +1,9 @@
 // The only way SiteSync talks to the outside world (spec §4 "Outbound HTTP").
-// https only, three provider API hosts only, 10 s timeout, redirects followed
+// https only, four provider API hosts only, 10 s timeout, redirects followed
 // only when they stay on the same allowlisted host. User-supplied URLs are
 // never fetched.
 
-export const ALLOWED_PROVIDER_HOSTS = new Set(["api.github.com", "api.netlify.com", "api.vercel.com"]);
+export const ALLOWED_PROVIDER_HOSTS = new Set(["api.github.com", "api.netlify.com", "api.vercel.com", "api.cloudflare.com"]);
 
 const TIMEOUT_MS = 10_000;
 const MAX_REDIRECTS = 3;

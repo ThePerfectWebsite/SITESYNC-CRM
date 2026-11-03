@@ -8,7 +8,9 @@ import { revokeWaiverAction, waiveBlockerAction } from "../work-actions";
 import { WaiveForm } from "./waive-form";
 
 /** Where a blocker is fixed: inside SiteSync, or (for checks) on GitHub. */
-function blockerHref(projectId: string, blocker: Blocker): { href: string; external: boolean } {
+function blockerHref(projectId: string, websiteId: string, blocker: Blocker): { href: string; external: boolean } {
+  if (blocker.type === "no_production_target") return { href: `/websites/${websiteId}`, external: false };
+  if (blocker.type === "preview_not_ready") return { href: `/projects/${projectId}/deployments`, external: false };
   if (blocker.type === "critical_task") return { href: `/projects/${projectId}/tasks/${blocker.key.slice("task:".length)}`, external: false };
   if (blocker.type === "failing_check") {
     const url = blocker.snapshot.htmlUrl;
@@ -22,11 +24,13 @@ function blockerHref(projectId: string, blocker: Blocker): { href: string; exter
 export function ReadinessPanel({
   projectId,
   readiness,
+  websiteId,
   readOnly,
 }: {
   projectId: string;
   readiness: ReadinessReport;
   readOnly: boolean;
+  websiteId: string;
 }) {
   const waive = waiveBlockerAction.bind(null, projectId);
   return (
@@ -49,7 +53,8 @@ export function ReadinessPanel({
             ? `Ready to release${readiness.waived.length ? `, with ${readiness.waived.length} waived blocker${readiness.waived.length === 1 ? "" : "s"}` : ""}.`
             : `Not ready: ${readiness.blockers.length} blocker${readiness.blockers.length === 1 ? "" : "s"}.`}{" "}
           <span className="text-muted-foreground">
-            Covers critical tasks, the release checklist and GitHub checks{readiness.commitSha ? ` on ${readiness.commitSha.slice(0, 7)}` : ""}; preview and hosting checks join when hosting is connected.
+            Covers the production host, critical tasks, the release checklist and GitHub checks
+            {readiness.commitSha ? ` on ${readiness.commitSha.slice(0, 7)}` : ""}.
           </span>
         </p>
       </div>
@@ -70,7 +75,7 @@ export function ReadinessPanel({
                 <li key={blocker.key} className="grid gap-2 border-b pb-3 last:border-b-0 last:pb-0">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     {(() => {
-                      const target = blockerHref(projectId, blocker);
+                      const target = blockerHref(projectId, websiteId, blocker);
                       return target.external ? (
                         <a href={target.href} target="_blank" rel="noopener noreferrer nofollow" className="text-sm text-primary hover:underline">
                           {blocker.label}

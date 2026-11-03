@@ -10,7 +10,7 @@ import { formatDateTime } from "@/lib/format";
 import { requireSession } from "@/server/auth/next";
 import { db } from "@/server/db";
 import { env } from "@/server/env";
-import { envVarStatus, listIntegrations } from "@/server/integrations/service";
+import { envVarStatus, listIntegrations, PROVIDER_LABELS } from "@/server/integrations/service";
 import { listWebhookDeliveries } from "@/server/integrations/webhooks";
 import { jobsRunning } from "@/server/jobs/runtime";
 import {
@@ -67,20 +67,20 @@ export default async function IntegrationsPage({ searchParams }: PageProps<"/int
         <p>
           <strong>SiteSync can&apos;t stop a hosting provider from auto-deploying to production on push or merge.</strong> If
           auto-publishing is on, code merged to the production branch can go live without SiteSync&apos;s approval. Lock
-          auto-publishing on the provider to make the approval gate meaningful (Netlify and Vercel arrive in the next phase).
+          auto-deploys on the provider to make the approval gate meaningful (each website&apos;s hosting panel shows the setting).
         </p>
       </div>
 
       <p className="text-sm text-muted-foreground">
-        GitHub is read only: SiteSync reads commits, pull requests and checks and never writes to your repositories.
+        All integrations are read only: SiteSync reads commits, checks and deployments and never changes anything on a provider.
         Background jobs are {jobsRunning() ? "running" : "not running in this process, so refreshes run immediately instead"}.
       </p>
 
-      <Section title="GitHub">
+      <Section title="Connections">
         {rows.length === 0 ? (
           <EmptyState icon={PlugZap} title="No integrations yet">
-            Everything works without one. Add GitHub to show commits, pull requests and checks, and to count failing
-            checks in release readiness.
+            Everything works without one. Add GitHub for commits, pull requests and checks, and Cloudflare Pages (or
+            Netlify/Vercel) for deployments. Both feed release readiness.
           </EmptyState>
         ) : (
           <ul className="grid gap-4">
@@ -93,6 +93,7 @@ export default async function IntegrationsPage({ searchParams }: PageProps<"/int
                     <CardContent className="grid gap-4">
                       <div className="flex flex-wrap items-center gap-2">
                         <h3 className="text-base font-semibold">{row.name}</h3>
+                        <span className="text-sm text-muted-foreground">{PROVIDER_LABELS[row.provider]}</span>
                         <IntegrationHealth health={row.health} />
                       </div>
                       {row.healthDetail ? <p className="text-sm text-muted-foreground">{row.healthDetail}</p> : null}
@@ -112,7 +113,9 @@ export default async function IntegrationsPage({ searchParams }: PageProps<"/int
                           ["Polling", row.pollEnabled ? "On" : "Off"],
                           [
                             "Webhooks",
-                            row.webhookEnabled ? (
+                            row.provider !== "github" ? (
+                              "Not used (polling only)"
+                            ) : row.webhookEnabled ? (
                               <span key="w" className="grid gap-1">
                                 <code className="font-mono text-xs break-all">{`${origin}/api/webhooks/github/${row.id}`}</code>
                                 {row.webhookSecretEnvVar ? (
@@ -141,6 +144,7 @@ export default async function IntegrationsPage({ searchParams }: PageProps<"/int
                         <div className="mt-3">
                           <IntegrationForm
                             idPrefix={`integration-${row.id}`}
+                            provider={row.provider}
                             action={updateIntegrationAction.bind(null, row.id)}
                             submitLabel="Save integration"
                             initial={{
@@ -162,7 +166,7 @@ export default async function IntegrationsPage({ searchParams }: PageProps<"/int
           </ul>
         )}
         <details className="rounded-lg border bg-card p-4" open={rows.length === 0}>
-          <summary className="cursor-pointer text-sm font-medium text-primary">Add a GitHub integration</summary>
+          <summary className="cursor-pointer text-sm font-medium text-primary">Add an integration</summary>
           <div className="mt-4">
             <IntegrationForm idPrefix="new-integration" action={createIntegrationAction} submitLabel="Add integration" />
           </div>

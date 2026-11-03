@@ -34,7 +34,7 @@ import { computeReadiness, waiveBlocker } from "@/server/records/readiness";
 import { createTask } from "@/server/records/tasks";
 import { loadStages, transitionStage } from "@/server/stages/service";
 import { checkRunJson, commitJson, fakeGitHub, healthyRepo, pullJson, sha } from "../support/fake-github";
-import { createAdmin, makeProject, makeWebsite, makeClient } from "../support/factories";
+import { createAdmin, makeClient, makeManualProductionHost, makeProject, makeWebsite } from "../support/factories";
 import { appDb, ownerClient, resetTestDatabase, testUrls } from "../support/test-db";
 
 let db: Db;
@@ -102,7 +102,7 @@ describe("integrations", () => {
     await expect(
       createIntegration(db, actor, { provider: "github", name: "Hook", tokenEnvVar: TOKEN_VAR, webhookEnabled: "on" }),
     ).rejects.toMatchObject({ fieldErrors: { webhookSecretEnvVar: expect.any(String) } });
-    await expect(createIntegration(db, actor, { provider: "netlify", name: "N", tokenEnvVar: "NETLIFY_TOKEN" })).rejects.toBeInstanceOf(
+    await expect(createIntegration(db, actor, { provider: "gitlab", name: "N", tokenEnvVar: "GITLAB_TOKEN" })).rejects.toBeInstanceOf(
       DomainError,
     );
     const id = await createIntegration(db, actor, { provider: "github", name: "Main", tokenEnvVar: TOKEN_VAR });
@@ -263,6 +263,7 @@ describe("readiness from GitHub checks", () => {
 
   async function readyProjectWithRepo() {
     const ctx = await setup();
+    await makeManualProductionHost(db, actor, ctx.websiteId);
     for (const item of await listChecklist(db, ctx.projectId)) await setChecklistItemChecked(db, actor, item.id, true);
     return ctx;
   }

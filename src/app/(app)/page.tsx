@@ -3,12 +3,15 @@ import Link from "next/link";
 import { AlertTriangle, CalendarClock, LayoutDashboard } from "lucide-react";
 import { EmptyState, PageHeader, Section } from "@/components/page";
 import { ActivityFeed } from "@/components/records";
-import { TaskPriority } from "@/components/status";
+import { DeploymentState } from "@/components/deployments";
+import { IntegrationHealth, TaskPriority } from "@/components/status";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { formatDate } from "@/lib/format";
+import { formatDate, formatDateTime } from "@/lib/format";
 import { requireSession } from "@/server/auth/next";
 import { db } from "@/server/db";
+import { deploymentAlerts } from "@/server/integrations/hosting-sync";
+import { listIntegrations } from "@/server/integrations/service";
 import { listActivity } from "@/server/records/activity";
 import { addDays, appToday } from "@/server/records/dates";
 import { listProjects, projectCountsByStage } from "@/server/records/projects";
@@ -22,13 +25,13 @@ const LIST_LIMIT = 10;
 type Deadline = { key: string; date: string; title: string; href: string; detail: string; kind: "task" | "launch" };
 
 // Screen 4: projects per stage, overdue work, deadlines in the next 14 days and
-// recent activity. Deployment alerts, sync errors and approvals join in Phases 3–4.
+// recent activity, deployment alerts and sync errors. Pending approvals join in Phase 4.
 export default async function DashboardPage() {
   const session = await requireSession();
   const database = db();
   const today = await appToday(database);
   const horizon = addDays(today, DEADLINE_DAYS);
-  const [counts, overdueProjects, lateTasks, dueTasks, upcomingLaunches, activity] = await Promise.all([
+  const [counts, overdueProjects, lateTasks, dueTasks, upcomingLaunches, activity, alerts, integrationRows] = await Promise.all([
     projectCountsByStage(database),
     listProjects(database, { overdue: true, today }),
     overdueTasks(database, today),
@@ -37,7 +40,10 @@ export default async function DashboardPage() {
       rows.filter((p) => p.targetLaunchDate && p.targetLaunchDate >= today && p.targetLaunchDate <= horizon && !p.overdue),
     ),
     listActivity(database, { excludeAuth: true }, 15),
+    deploymentAlerts(database),
+    listIntegrations(database),
   ]);
+  const syncErrors = integrationRows.filter((i) => i.health === "error" || i.health === "degraded");
   const total = counts.reduce((sum, c) => sum + c.count, 0);
   const max = Math.max(1, ...counts.map((c) => c.count));
 
@@ -164,6 +170,43 @@ export default async function DashboardPage() {
               </Card>
             )}
           </Section>
+
+          {alerts.length || syncErrors.length ? (
+            <Section title="Deployments and sync">
+              <Card>
+                <CardContent className="grid gap-3">
+                  {alerts.length ? (
+                    <ul className="grid gap-2" aria-label="Deployment alerts">
+                      {alerts.map((a) => (
+                        <li key={a.id} className="flex flex-wrap items-center gap-2 text-sm">
+                          <DeploymentState state={a.state} />
+                          <Link href={`/websites/${a.websiteId}`} className="font-medium text-primary hover:underline">
+                            {a.websiteName}
+                          </Link>
+                          <span className="text-muted-foreground">
+                            production {a.state === "failed" ? "deploy failed" : "deploy in progress"} · {formatDateTime(a.providerCreatedAt)}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+                  {syncErrors.length ? (
+                    <ul className="grid gap-2" aria-label="Sync errors">
+                      {syncErrors.map((i) => (
+                        <li key={i.id} className="flex flex-wrap items-center gap-2 text-sm">
+                          <IntegrationHealth health={i.health} />
+                          <Link href="/integrations" className="font-medium text-primary hover:underline">
+                            {i.name}
+                          </Link>
+                          <span className="text-muted-foreground">{i.healthDetail ?? i.lastError ?? ""}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+                </CardContent>
+              </Card>
+            </Section>
+          ) : null}
 
           <Section title="Recent activity">
             <ActivityFeed items={activity} />

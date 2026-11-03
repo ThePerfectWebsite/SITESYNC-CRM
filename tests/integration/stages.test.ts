@@ -10,7 +10,7 @@ import { updateTemplateStep } from "@/server/records/templates";
 import { noDeploymentsYet, type DeploymentFacts } from "@/server/stages/deployment-facts";
 import type { DeploymentFact, UserTransitionRequest } from "@/server/stages/machine";
 import { loadStages, systemGoLive, transitionStage } from "@/server/stages/service";
-import { createAdmin, makeClient, makeProject, makeWebsite } from "../support/factories";
+import { createAdmin, makeClient, makeProductionDeployment, makeProject, makeWebsite } from "../support/factories";
 import { appDb, ownerClient, resetTestDatabase } from "../support/test-db";
 
 let db: Db;
@@ -240,8 +240,9 @@ describe("Live via the system path only (decision 0004)", () => {
   });
 
   it("a provider-confirmed production deploy moves Ready to Deploy → Live, as the system, with the deployment recorded", async () => {
-    const { projectId } = await makeProject(db, actor, { initialStageKey: "ready_to_deploy" });
-    const fact = deployment(projectId);
+    const { projectId, websiteId } = await makeProject(db, actor, { initialStageKey: "ready_to_deploy" });
+    const { deploymentId } = await makeProductionDeployment(db, actor, websiteId);
+    const fact = deployment(projectId, { id: deploymentId });
     await expect(systemGoLive(db, { projectId, deploymentId: fact.id }, { facts: factsWith(fact) })).resolves.toEqual({
       moved: true,
     });
@@ -298,10 +299,11 @@ describe("atomicity", () => {
   });
 
   it("the same holds for the system go_live path", async () => {
-    const { projectId } = await makeProject(db, actor, { initialStageKey: "ready_to_deploy" });
+    const { projectId, websiteId } = await makeProject(db, actor, { initialStageKey: "ready_to_deploy" });
     const before = await loadStages(db, projectId);
+    const { deploymentId } = await makeProductionDeployment(db, actor, websiteId);
     const fact = {
-      id: "00000000-0000-4000-8000-000000000002",
+      id: deploymentId,
       projectId,
       environment: "production" as const,
       origin: "provider_observed" as const,

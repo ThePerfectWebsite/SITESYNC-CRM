@@ -7,6 +7,8 @@ import { z } from "zod";
 import { writeAudit } from "../audit";
 import type { Db, DbOrTx, Tx } from "../db/client";
 import {
+  deployments,
+  hostingLinks,
   integrations,
   projects,
   readinessWaivers,
@@ -24,7 +26,8 @@ import { OPEN_TASK_STATUSES, requireLiveProject } from "./tasks";
 
 export type Blocker = {
   key: string;
-  type: BlockerType;
+  /** `no_production_target` is computed only and can never be waived, so it never reaches the waivers table. */
+  type: BlockerType | "no_production_target";
   label: string;
   /** Some blockers (e.g. a missing production host) can never be waived. */
   waivable: boolean;
@@ -52,7 +55,8 @@ export type Readiness = {
   inactiveWaivers: WaiverView[];
 };
 
-export type ProposedTarget = { commitSha?: string | null };
+/** What a release would ship: a commit and/or a specific provider deploy (Phase 4 preflight). */
+export type ProposedTarget = { commitSha?: string | null; deploymentId?: string | null };
 
 /** Does a waiver apply? A commit-scoped waiver applies only to that exact proposed commit. */
 export function waiverApplies(waiver: Pick<WaiverView, "commitSha">, proposed?: ProposedTarget): boolean {
@@ -204,9 +208,52 @@ export async function checkBlockers(db: DbOrTx, projectId: string, proposed?: Pr
 }
 
 /** Every blocker that applies now, plus the commit it was judged for and any notes. */
+/**
+ * Hosting blockers (spec §6): no production host at all (can't be waived:
+ * there is nothing to release to), and a proposed deploy that isn't built.
+ * A manual hosting record counts as a production host.
+ */
+export async function hostingBlockers(db: DbOrTx, projectId: string, proposed?: ProposedTarget): Promise<Blocker[]> {
+  const [row] = await db
+    .select({ linkId: hostingLinks.id })
+    .from(projects)
+    .leftJoin(
+      hostingLinks,
+      and(eq(hostingLinks.websiteId, projects.websiteId), eq(hostingLinks.environment, "production"), isNull(hostingLinks.archivedAt)),
+    )
+    .where(eq(projects.id, projectId));
+  const blockers: Blocker[] = [];
+  if (!row?.linkId) {
+    blockers.push({
+      key: "hosting:missing",
+      type: "no_production_target",
+      label: "No production host. Link Cloudflare Pages, Netlify or Vercel (or record the host) on the website page.",
+      waivable: false,
+      snapshot: {},
+    });
+  }
+  if (proposed?.deploymentId) {
+    const [deployment] = await db.select().from(deployments).where(eq(deployments.id, proposed.deploymentId));
+    if (!deployment || !["ready", "published"].includes(deployment.state)) {
+      blockers.push({
+        key: `preview:${proposed.deploymentId}`,
+        type: "preview_not_ready",
+        label: `The proposed deploy isn't ready (${deployment ? deployment.state : "not found"}).`,
+        waivable: true,
+        snapshot: { deploymentId: proposed.deploymentId, state: deployment?.state ?? null },
+      });
+    }
+  }
+  return blockers;
+}
+
 export async function currentBlockers(db: DbOrTx, projectId: string, proposed?: ProposedTarget) {
-  const [manual, checks] = await Promise.all([manualBlockers(db, projectId), checkBlockers(db, projectId, proposed)]);
-  return { blockers: [...manual, ...checks.blockers], commitSha: checks.commitSha, notes: checks.notes };
+  const [manual, checks, hosting] = await Promise.all([
+    manualBlockers(db, projectId),
+    checkBlockers(db, projectId, proposed),
+    hostingBlockers(db, projectId, proposed),
+  ]);
+  return { blockers: [...hosting, ...manual, ...checks.blockers], commitSha: checks.commitSha, notes: checks.notes };
 }
 
 export type ReadinessReport = Readiness & { commitSha: string | null; notes: string[] };
@@ -247,7 +294,9 @@ export async function waiveBlocker(
       const project = await requireLiveProject(tx, projectId);
       const blocker = (await currentBlockers(tx, projectId)).blockers.find((b) => b.key === data.blockerKey);
       if (!blocker) throw new DomainError("conflict", "That blocker no longer applies. Reload the page.");
-      if (!blocker.waivable) throw new DomainError("invalid", "This blocker can't be waived.");
+      if (!blocker.waivable || blocker.type === "no_production_target") {
+        throw new DomainError("invalid", "This blocker can't be waived.");
+      }
       const auditEventId = await writeAudit(tx, {
         actor: auditActor(actor),
         action: "readiness.waived",

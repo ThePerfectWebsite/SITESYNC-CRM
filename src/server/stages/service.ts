@@ -5,10 +5,10 @@
 import { and, asc, desc, eq } from "drizzle-orm";
 import { writeAudit } from "../audit";
 import type { Db, DbOrTx, Tx } from "../db/client";
-import { projectStages, projects, stageHistory, users } from "../db/schema";
+import { deployments, projectStages, projects, stageHistory, users } from "../db/schema";
 import type { Actor } from "../records/actor";
 import { DomainError, isUniqueViolation, notFound } from "../records/errors";
-import { noDeploymentsYet, type DeploymentFacts } from "./deployment-facts";
+import { databaseDeploymentFacts, type DeploymentFacts } from "./deployment-facts";
 import {
   checkGoLiveDeployment,
   currentStage,
@@ -126,7 +126,7 @@ export async function transitionStage(
   input: TransitionInput,
   options: StageServiceOptions = {},
 ): Promise<TransitionPlan> {
-  const facts = options.facts ?? noDeploymentsYet;
+  const facts = options.facts ?? databaseDeploymentFacts;
   try {
     return await db.transaction(async (tx) => {
       const project = await lockProject(tx, input.projectId);
@@ -200,9 +200,18 @@ export async function systemGoLive(
   input: { projectId: string; deploymentId: string; requestId?: string | null },
   options: StageServiceOptions = {},
 ): Promise<GoLiveResult> {
-  const facts = options.facts ?? noDeploymentsYet;
-  return db.transaction(async (tx) => {
-    const project = await lockProject(tx, input.projectId);
+  return db.transaction(async (tx) => goLiveInTransaction(tx, await lockProject(tx, input.projectId), input, options));
+}
+
+/** go_live inside an open transaction, with the project row already locked. */
+async function goLiveInTransaction(
+  tx: Tx,
+  project: ProjectRow,
+  input: { deploymentId: string; requestId?: string | null; metadata?: Record<string, unknown> },
+  options: StageServiceOptions,
+): Promise<GoLiveResult> {
+  const facts = options.facts ?? databaseDeploymentFacts;
+  {
     const refusal = checkGoLiveDeployment(project.id, await facts.findDeployment(tx, input.deploymentId));
     if (refusal) throw new DomainError("invalid", `Can't move to Live: ${refusal}.`);
 
@@ -220,7 +229,7 @@ export async function systemGoLive(
         websiteId: project.websiteId,
         projectId: project.id,
         summary: `${project.name}: production deploy confirmed`,
-        metadata: { deploymentId: input.deploymentId },
+        metadata: { deploymentId: input.deploymentId, ...input.metadata },
         requestId: input.requestId,
       });
       return { moved: false };
@@ -238,7 +247,7 @@ export async function systemGoLive(
       websiteId: project.websiteId,
       projectId: project.id,
       summary: `${project.name}: ${move.fromName} → ${move.toName} (production deploy confirmed)`,
-      metadata: { ...move.metadata, deploymentId: input.deploymentId },
+      metadata: { ...move.metadata, deploymentId: input.deploymentId, ...input.metadata },
       requestId: input.requestId,
     });
     await tx.insert(stageHistory).values({
@@ -252,6 +261,56 @@ export async function systemGoLive(
     });
     await options.afterHistoryInsert?.(tx);
     return { moved: true };
+  }
+}
+
+/**
+ * OQ-2: the provider published a production deploy on its own (auto-publish)
+ * while the project waits at Ready to Deploy. The operator confirms "mark Live";
+ * the deploy is attributed to the project and go_live runs with it, in one
+ * transaction. Live still rests on the provider's confirmation, not the click.
+ */
+export async function confirmLiveFromProviderDeploy(
+  db: Db,
+  actor: Actor,
+  input: { projectId: string; deploymentId: string },
+  options: StageServiceOptions = {},
+): Promise<GoLiveResult> {
+  return db.transaction(async (tx) => {
+    const project = await lockProject(tx, input.projectId);
+    const [deployment] = await tx
+      .select()
+      .from(deployments)
+      .where(eq(deployments.id, input.deploymentId))
+      .for("update");
+    if (!deployment) throw notFound("Deployment");
+    if (deployment.websiteId !== project.websiteId) {
+      throw new DomainError("invalid", "That deployment belongs to another website.");
+    }
+    if (deployment.projectId && deployment.projectId !== project.id) {
+      throw new DomainError("conflict", "That deployment is already attributed to another project.");
+    }
+    if (!deployment.projectId) {
+      await tx.update(deployments).set({ projectId: project.id }).where(eq(deployments.id, deployment.id));
+      await writeAudit(tx, {
+        actor: { type: "user", userId: actor.userId },
+        action: "deployment.attributed",
+        subjectType: "deployment",
+        subjectId: deployment.id,
+        clientId: project.clientId,
+        websiteId: project.websiteId,
+        projectId: project.id,
+        summary: `Production deploy ${deployment.providerDeploymentId ?? deployment.id} attributed to ${project.name}`,
+        metadata: { reason: "operator confirmed a provider-published deploy (OQ-2)" },
+        requestId: actor.requestId,
+      });
+    }
+    return goLiveInTransaction(
+      tx,
+      project,
+      { deploymentId: deployment.id, requestId: actor.requestId, metadata: { confirmedBy: actor.userId, via: "oq2_prompt" } },
+      options,
+    );
   });
 }
 

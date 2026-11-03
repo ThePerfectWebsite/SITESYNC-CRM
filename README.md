@@ -56,6 +56,10 @@ The Docker init script only runs on an **empty** volume. If you change the role 
 
 SiteSync can read commits, pull requests and check runs from GitHub, and counts failing checks in release readiness. It's read only, works from a token you keep in `.env`, and everything else works without it. Webhooks are off by default. See [docs/github.md](docs/github.md).
 
+## Hosting (optional)
+
+SiteSync reads each website's deploys from **Cloudflare Pages**, Netlify or Vercel: what's live, recent previews, and whether the host auto-deploys. It's read only, and a website without a production host can't be released (readiness says so). A manual host record works without any token. See [docs/hosting.md](docs/hosting.md).
+
 ## Background jobs
 
 The server runs a small job runner (pg-boss, in the same process). It polls GitHub, processes webhook deliveries and prunes old records. `npm run db:migrate` sets up its `pgboss` schema as the owner role; the app only uses it. Set `SITESYNC_JOBS=off` to run without it: manual refreshes then run immediately instead. See decision [0009](docs/decisions/0009-pg-boss-job-runner.md).
@@ -80,5 +84,5 @@ Every push to `main` and every pull request runs [.github/workflows/ci.yml](.git
 - `audit_events` is append-only, enforced by database triggers. The app's database role also lacks `UPDATE`/`DELETE`/`TRUNCATE` on it.
 - Secrets, tokens and credentials are redacted from logs, error text and audit records.
 - Provider tokens live only in the environment; the database stores env var *names*, and SiteSync's own variables (`DATABASE_*`, `POSTGRES_*`, `SITESYNC_*` …) can't be used as one.
-- Outbound requests go only to `api.github.com`, `api.netlify.com` and `api.vercel.com`, over https, with a timeout, and never follow redirects to other hosts. User-entered URLs are displayed, never fetched.
+- Outbound requests go only to `api.github.com`, `api.cloudflare.com`, `api.netlify.com` and `api.vercel.com`, over https, with a timeout, and never follow redirects to other hosts. User-entered URLs are displayed, never fetched.
 - Webhooks are off unless enabled per integration, and need a valid HMAC signature. Nothing is stored before the signature checks out.

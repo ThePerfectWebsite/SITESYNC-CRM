@@ -14,7 +14,7 @@ import {
   stageTemplateSteps,
   websites,
 } from "../db/schema";
-import { noDeploymentsYet, type DeploymentFacts } from "../stages/deployment-facts";
+import { databaseDeploymentFacts, type DeploymentFacts } from "../stages/deployment-facts";
 import { planInitial } from "../stages/machine";
 import { auditActor, type Actor } from "./actor";
 import { instantiateChecklist } from "./checklist";
@@ -203,7 +203,7 @@ export async function updateProject(
   actor: Actor,
   id: string,
   input: ProjectInput,
-  facts: DeploymentFacts = noDeploymentsYet,
+  facts: DeploymentFacts = databaseDeploymentFacts,
 ): Promise<void> {
   const data = parseInput(projectSchema, input);
   try {

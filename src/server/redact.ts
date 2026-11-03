@@ -76,5 +76,13 @@ export function redact(value: unknown, depth = 0): unknown {
 /** Redacted, single-line description of an unknown error, safe to log or store. */
 export function describeError(error: unknown): string {
   if (error instanceof Error) return redactString(`${error.name}: ${error.message}`);
+  // Libraries sometimes emit plain objects (e.g. pg-boss job failures): show their fields, redacted.
+  if (error && typeof error === "object") {
+    try {
+      return JSON.stringify(redact(error)).slice(0, 2000);
+    } catch {
+      return "[unprintable error object]";
+    }
+  }
   return redactString(String(error));
 }

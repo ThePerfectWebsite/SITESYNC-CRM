@@ -5,6 +5,7 @@ import { PlugZap, Pencil, Plus } from "lucide-react";
 import { ActionButton } from "@/components/forms/action-button";
 import { FormMessage } from "@/components/forms/controls";
 import { Details, PageHeader, Section } from "@/components/page";
+import { DeploymentsTable } from "@/components/deployments";
 import { ActivityFeed, ProjectsTable } from "@/components/records";
 import { ArchivedPill, WebsiteStatus } from "@/components/status";
 import { Button } from "@/components/ui/button";
@@ -13,12 +14,15 @@ import { isUuid } from "@/lib/ids";
 import { requireSession } from "@/server/auth/next";
 import { db } from "@/server/db";
 import { listRepositoryLinks, repositorySummary } from "@/server/integrations/repo-links";
-import { listIntegrations } from "@/server/integrations/service";
+import { listDeploymentsForWebsite, listHostingLinks, liveAndLatestPreview } from "@/server/integrations/hosting-sync";
+import { listIntegrations, PROVIDER_LABELS } from "@/server/integrations/service";
 import { listActivity } from "@/server/records/activity";
 import { listProjects } from "@/server/records/projects";
 import { getWebsite } from "@/server/records/websites";
-import { createRepositoryLinkAction } from "../../integrations/actions";
+import { createHostingLinkAction, createRepositoryLinkAction } from "../../integrations/actions";
 import { archiveWebsiteAction, restoreWebsiteAction } from "../actions";
+import { HostingLinkForm } from "./hosting-link-form";
+import { HostingPanel } from "./hosting-panel";
 import { RepoLinkForm } from "./repo-link-form";
 import { RepositoryPanel } from "./repository-panel";
 
@@ -44,6 +48,15 @@ export default async function WebsitePage({ params, searchParams }: PageProps<"/
   const { website, clientName } = row;
   const archived = Boolean(website.archivedAt);
   const refreshNotice = REFRESH_NOTICES[String((await searchParams).refresh)];
+  const [hosts, history, { live }, allIntegrations] = await Promise.all([
+    listHostingLinks(database, id),
+    listDeploymentsForWebsite(database, id, 25),
+    liveAndLatestPreview(database, id),
+    listIntegrations(database),
+  ]);
+  const hostingIntegrations = allIntegrations
+    .filter((i) => i.provider !== "github")
+    .map((i) => ({ id: i.id, name: `${i.name} (${PROVIDER_LABELS[i.provider]})`, provider: i.provider }));
   const [links, githubIntegrations] = await Promise.all([
     listRepositoryLinks(database, id),
     listIntegrations(database).then((all) => all.filter((i) => i.provider === "github")),
@@ -132,15 +145,43 @@ export default async function WebsitePage({ params, searchParams }: PageProps<"/
       </Section>
 
       <Section title="Hosting">
-        <Card>
-          <CardContent className="flex items-start gap-3 text-sm">
-            <PlugZap className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-            <p className="text-muted-foreground">
-              Netlify and Vercel arrive in the next phase. Until a production host is connected, this website&apos;s
-              projects stop at Ready to Deploy.
-            </p>
-          </CardContent>
-        </Card>
+        {hosts.length ? (
+          hosts.map((row) => (
+            <HostingPanel
+              key={row.link.id}
+              websiteId={id}
+              row={row}
+              current={row.link.environment === "production" ? live : null}
+              readOnly={archived}
+            />
+          ))
+        ) : (
+          <Card>
+            <CardContent className="flex items-start gap-3 text-sm">
+              <PlugZap className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+              <p className="text-muted-foreground">
+                No host linked. Until a production host is connected through an integration, SiteSync can&apos;t confirm a
+                deploy, so this website&apos;s projects stop at Ready to Deploy and release readiness shows a blocker.
+              </p>
+            </CardContent>
+          </Card>
+        )}
+        {archived ? null : (
+          <details className="rounded-lg border bg-card p-4">
+            <summary className="cursor-pointer text-sm font-medium text-primary">Link a host</summary>
+            <div className="mt-4">
+              <HostingLinkForm action={createHostingLinkAction.bind(null, id)} integrations={hostingIntegrations} />
+            </div>
+          </details>
+        )}
+      </Section>
+
+      <Section title="Deploy history">
+        {history.length ? (
+          <DeploymentsTable rows={history} />
+        ) : (
+          <p className="text-sm text-muted-foreground">No deployments recorded yet.</p>
+        )}
       </Section>
 
       <Section

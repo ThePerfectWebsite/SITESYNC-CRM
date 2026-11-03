@@ -7,7 +7,7 @@ const TABS = [
   { label: "Overview", path: "", available: true },
   { label: "Tasks", path: "/tasks", available: true },
   { label: "Changes", path: "/changes", available: true },
-  { label: "Deployments", path: "/deployments", available: false },
+  { label: "Deployments", path: "/deployments", available: true },
   { label: "Activity", path: "/activity", available: true },
   { label: "Settings", path: "/settings", available: true },
 ];

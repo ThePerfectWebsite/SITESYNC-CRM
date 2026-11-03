@@ -12,6 +12,10 @@ export const QUEUES = {
   githubSync: "github-sync",
   /** Cron: enqueue syncs for links due a poll. */
   githubPoll: "github-poll",
+  /** Sync one hosting link (Netlify, Vercel, Cloudflare Pages), same per-link rule. */
+  hostingSync: "hosting-sync",
+  /** Cron: enqueue syncs for hosting links due a poll. */
+  hostingPoll: "hosting-poll",
   /** Process one webhook delivery. */
   webhookProcess: "webhook-process",
   /** Cron: re-run failed deliveries whose backoff has elapsed. */
@@ -23,6 +27,8 @@ export const QUEUES = {
 export const QUEUE_OPTIONS: Record<string, Omit<Queue, "name">> = {
   [QUEUES.githubSync]: { policy: "stately", retryLimit: 2, retryDelay: 60, retryBackoff: true, expireInSeconds: 15 * 60 },
   [QUEUES.githubPoll]: { policy: "singleton", retryLimit: 0, expireInSeconds: 5 * 60 },
+  [QUEUES.hostingSync]: { policy: "stately", retryLimit: 2, retryDelay: 60, retryBackoff: true, expireInSeconds: 15 * 60 },
+  [QUEUES.hostingPoll]: { policy: "singleton", retryLimit: 0, expireInSeconds: 5 * 60 },
   [QUEUES.webhookProcess]: { policy: "standard", retryLimit: 0, expireInSeconds: 5 * 60 },
   [QUEUES.webhookRetry]: { policy: "singleton", retryLimit: 0, expireInSeconds: 5 * 60 },
   [QUEUES.maintenance]: { policy: "singleton", retryLimit: 1, expireInSeconds: 15 * 60 },
@@ -31,6 +37,7 @@ export const QUEUE_OPTIONS: Record<string, Omit<Queue, "name">> = {
 /** Cron schedules (server time zone; none of these are calendar-sensitive). */
 export const SCHEDULES: { queue: string; cron: string }[] = [
   { queue: QUEUES.githubPoll, cron: "*/5 * * * *" },
+  { queue: QUEUES.hostingPoll, cron: "*/5 * * * *" },
   { queue: QUEUES.webhookRetry, cron: "* * * * *" },
   { queue: QUEUES.maintenance, cron: "17 3 * * *" },
 ];

@@ -44,6 +44,12 @@ test("set up a project for work tracking", async ({ page }) => {
   await page.getByRole("link", { name: "Add website" }).click();
   await page.getByLabel("Name", { exact: true }).fill("Gallery site");
   await page.getByRole("button", { name: "Create website" }).click();
+  // A production host (here a manual record) clears readiness's "no production host" blocker.
+  await page.getByText("Link a host").click();
+  await page.getByLabel("Connection", { exact: true }).selectOption({ label: "None: a manual record (no sync)" });
+  await page.getByLabel("Host", { exact: true }).selectOption("cloudflare");
+  await page.getByRole("button", { name: "Link host" }).click();
+  await expect(page.getByText("Manual record (not synced)")).toBeVisible();
   await page.getByRole("link", { name: "New project" }).click();
   await page.getByLabel("Website", { exact: true }).selectOption({ label: "Gallery site" });
   await page.getByLabel("Name", { exact: true }).fill("Autumn exhibition");

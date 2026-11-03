@@ -6,7 +6,9 @@ import type { Db } from "../db/client";
 import { appSettings } from "../db/schema";
 import { pruneLoginAttempts } from "../auth/throttle";
 import { linksDueForPoll, syncRepositoryLink, type SyncMode } from "../integrations/github-sync";
+import { hostingLinksDueForPoll, syncHostingLink } from "../integrations/hosting-sync";
 import type { AdapterFactory } from "../integrations/service";
+import type { HostingAdapter } from "../providers/hosting";
 import { deliveriesDueForRetry, processWebhookDelivery, pruneWebhookInbox } from "../integrations/webhooks";
 
 export const POLL_INTERVAL_SETTING = "sync.poll_interval_minutes";
@@ -29,6 +31,19 @@ export function runSyncJob(db: Db, job: SyncJob, factory?: AdapterFactory) {
 export async function runPollJob(db: Db, enqueue: (job: SyncJob) => Promise<unknown>, now: Date = new Date()) {
   const due = await linksDueForPoll(db, await getPollIntervalMinutes(db), now);
   for (const linkId of due) await enqueue({ linkId, mode: "poll" });
+  return due.length;
+}
+
+export type HostingSyncJob = { linkId: string };
+
+export function runHostingSyncJob(db: Db, job: HostingSyncJob, factory?: AdapterFactory<HostingAdapter>) {
+  return syncHostingLink(db, job.linkId, { factory });
+}
+
+/** Enqueues a sync for every hosting link that is due (same interval as GitHub). */
+export async function runHostingPollJob(db: Db, enqueue: (job: HostingSyncJob) => Promise<unknown>, now: Date = new Date()) {
+  const due = await hostingLinksDueForPoll(db, await getPollIntervalMinutes(db), now);
+  for (const linkId of due) await enqueue({ linkId });
   return due.length;
 }
 

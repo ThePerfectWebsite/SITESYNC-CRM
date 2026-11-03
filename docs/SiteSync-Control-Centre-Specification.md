@@ -1,6 +1,6 @@
 # SiteSync Control Centre — Specification
 
-Status: **v1 — approved by operator** (Phase S, 2026-11-03)
+Status: **v1 — approved by operator** (Phase S, 2026-11-03). Amended in Phase 3b: Cloudflare Pages added as a hosting provider (decision 0010).
 
 This document is the source of truth for product behaviour and schema. The build prompt remains the source of truth for process, safety rules and stack. Where this spec and the prompt conflict on safety, the stricter rule wins.
 
@@ -348,7 +348,7 @@ One row per configured provider connection.
 
 | Column | Type | Constraints |
 |---|---|---|
-| `provider` | `text NOT NULL` | `IN ('github','netlify','vercel')` |
+| `provider` | `text NOT NULL` | `IN ('github','netlify','vercel','cloudflare')` ; cloudflare added in Phase 3b (decision 0010) |
 | `name` | `text NOT NULL` | 1–100; unique `(provider, name) WHERE archived_at IS NULL` |
 | `token_env_var` | `text NOT NULL` | env var **name** only |
 | `account_ref` | `text NULL` | ≤ 200 — GitHub owner / Netlify account slug / Vercel team ID |
@@ -412,7 +412,7 @@ Normalized, redacted snapshots of commits, PRs and check runs.
 |---|---|---|
 | `website_id` | `uuid NOT NULL` | FK `websites` |
 | `integration_id` | `uuid NULL` | FK `integrations`; NULL = manual hosting record (no sync) |
-| `provider` | `text NOT NULL` | `IN ('netlify','vercel','other')`; must match integration's provider |
+| `provider` | `text NOT NULL` | `IN ('netlify','vercel','cloudflare','other')`; must match integration's provider |
 | `provider_project_id` | `text NULL` | Netlify site id / Vercel project id; required when `integration_id` set |
 | `provider_project_name` | `text NULL` | ≤ 200 |
 | `environment` | `text NOT NULL` | `IN ('production','preview','staging')` |
@@ -436,7 +436,7 @@ One row per deploy known to SiteSync, whether observed from the provider, initia
 | `hosting_link_id` | `uuid NOT NULL` | FK `hosting_links` |
 | `website_id` | `uuid NOT NULL` | FK `websites` (denormalized, must match hosting link) |
 | `project_id` | `uuid NULL` | FK `projects`; set for SiteSync-initiated, or when operator attributes |
-| `provider` | `text NOT NULL` | `IN ('netlify','vercel','other')` |
+| `provider` | `text NOT NULL` | `IN ('netlify','vercel','cloudflare','other')` |
 | `provider_deployment_id` | `text NULL` | **unique `(provider, provider_deployment_id)` where not null** |
 | `environment` | `text NOT NULL` | `IN ('production','preview','staging')` |
 | `origin` | `text NOT NULL` | `IN ('provider_observed','sitesync_initiated','manual_record')` |
@@ -496,7 +496,7 @@ Unique partial `(hosting_link_id) WHERE status = 'awaiting_confirmation'` — at
 
 | Column | Type | Constraints |
 |---|---|---|
-| `provider` | `text NOT NULL` | `IN ('github','netlify','vercel')` |
+| `provider` | `text NOT NULL` | `IN ('github','netlify','vercel','cloudflare')` |
 | `integration_id` | `uuid NULL` | FK `integrations` |
 | `delivery_id` | `text NOT NULL` | ≤ 200; **unique `(provider, delivery_id)`** |
 | `event_type` | `text NOT NULL` | ≤ 100; must be in allowlist to be stored as `received` (else `ignored`) |
@@ -539,7 +539,7 @@ integrations 1─* repository_links, hosting_links, webhook_inbox
 - **CSRF:** Server Actions rely on Next.js's built-in Origin/Host check; `serverActions.allowedOrigins` is left at default (same-origin). Route Handlers that mutate check `Origin` (or `Referer` fallback) equals the configured app origin and reject otherwise. Webhook routes are exempt (HMAC-authenticated).
 - **Binding:** `next dev`/`next start` launched with `-H 127.0.0.1`. LAN mode (`SITESYNC_LAN_MODE=true` + `SITESYNC_PUBLIC_ORIGIN=https://…`) changes the bind host only when both are set; documentation states it requires HTTPS via an operator-run reverse proxy with a trusted cert.
 - **Headers:** CSP (`default-src 'self'`, nonce-based scripts), `X-Frame-Options: DENY`, `Referrer-Policy: same-origin`, `X-Content-Type-Options: nosniff`.
-- **Outbound HTTP:** a single `providerFetch()` wrapper (server-only) that rejects any host not in `{api.github.com, api.netlify.com, api.vercel.com}`, forces https, sets timeouts (10 s), and never follows redirects to other hosts. User-supplied URLs are never fetched.
+- **Outbound HTTP:** a single `providerFetch()` wrapper (server-only) that rejects any host not in `{api.github.com, api.netlify.com, api.vercel.com, api.cloudflare.com}`, forces https, sets timeouts (10 s), and never follows redirects to other hosts. User-supplied URLs are never fetched.
 - **Redaction:** central `redact()` applied to logs, error strings, `audit_events` JSON, provider snapshots and webhook bodies. Removes keys matching `/(token|secret|password|authorization|cookie|api[-_]?key|signature|session)/i`, strips `access_token`/`token`/`code`/`sig` query params from URLs, and masks strings matching known token shapes (`ghp_`, `github_pat_`, `gho_`, `nfp_`, Vercel tokens, JWTs).
 
 ---

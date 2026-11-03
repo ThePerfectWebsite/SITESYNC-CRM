@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import type { FormState } from "@/lib/form-state";
 import { db } from "@/server/db";
 import { formValues, requireActor, runForm } from "@/server/http/action";
+import { archiveHostingLink, createHostingLink } from "@/server/integrations/hosting-sync";
 import { archiveRepositoryLink, createRepositoryLink } from "@/server/integrations/repo-links";
 import {
   archiveIntegration,
@@ -13,7 +14,7 @@ import {
   updateIntegration,
 } from "@/server/integrations/service";
 import { replayDelivery } from "@/server/integrations/webhooks";
-import { enqueueSync, enqueueWebhook } from "@/server/jobs/runtime";
+import { enqueueHostingSync, enqueueSync, enqueueWebhook } from "@/server/jobs/runtime";
 
 const FIELDS = ["name", "tokenEnvVar", "accountRef", "webhookSecretEnvVar"] as const;
 
@@ -32,7 +33,8 @@ function integrationInput(formData: FormData) {
 export async function createIntegrationAction(_prev: FormState, formData: FormData): Promise<FormState> {
   const actor = await requireActor();
   const { values, input } = integrationInput(formData);
-  const result = await runForm(values, () => createIntegration(db(), actor, { ...input, provider: "github" }));
+  const provider = String(formData.get("provider") ?? "github");
+  const result = await runForm({ ...values, provider }, () => createIntegration(db(), actor, { ...input, provider }));
   if (!result.ok) return result.state;
   redirect("/integrations?created=1");
 }
@@ -79,6 +81,30 @@ export async function replayDeliveryAction(id: string): Promise<FormState> {
   if (!result.ok) return result.state;
   await enqueueWebhook(id);
   redirect("/integrations?replayed=1");
+}
+
+// --- Hosting links (website detail) ---------------------------------------------
+
+export async function createHostingLinkAction(websiteId: string, _prev: FormState, formData: FormData): Promise<FormState> {
+  const actor = await requireActor(websiteId);
+  const values = formValues(formData, ["integrationId", "provider", "providerProjectId", "environment", "domain"]);
+  const result = await runForm(values, () => createHostingLink(db(), actor, websiteId, values));
+  if (!result.ok) return result.state;
+  if (values.integrationId) await enqueueHostingSync(result.value);
+  redirect(`/websites/${websiteId}`);
+}
+
+export async function refreshHostingLinkAction(websiteId: string, linkId: string): Promise<FormState> {
+  await requireActor(websiteId, linkId);
+  const outcome = await enqueueHostingSync(linkId);
+  redirect(`/websites/${websiteId}?refresh=${outcome}`);
+}
+
+export async function archiveHostingLinkAction(websiteId: string, linkId: string): Promise<FormState> {
+  const actor = await requireActor(websiteId, linkId);
+  const result = await runForm({}, () => archiveHostingLink(db(), actor, linkId));
+  if (!result.ok) return result.state;
+  redirect(`/websites/${websiteId}`);
 }
 
 // --- Repository links (website detail) ------------------------------------------

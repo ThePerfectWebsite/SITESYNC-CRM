@@ -8,7 +8,7 @@ import { formValues, requireActor, runForm } from "@/server/http/action";
 import { DomainError, notFound } from "@/server/records/errors";
 import { createProject, getProject, updateProject } from "@/server/records/projects";
 import { inferTransition, type UserTransitionRequest } from "@/server/stages/machine";
-import { loadStageState, transitionStage } from "@/server/stages/service";
+import { confirmLiveFromProviderDeploy, loadStageState, transitionStage } from "@/server/stages/service";
 
 const FIELDS = ["name", "code", "description", "startDate", "targetLaunchDate", "websiteId"] as const;
 
@@ -60,6 +60,18 @@ export async function moveStageAction(projectId: string, _prev: FormState, formD
       request,
     });
   });
+  if (!result.ok) return result.state;
+  redirect(`/projects/${projectId}`);
+}
+
+/**
+ * OQ-2: the operator confirms that a deploy the provider published on its own
+ * should move the project to Live. The go_live itself still requires the
+ * provider's confirmation (decision 0004); the stage service checks it.
+ */
+export async function confirmLiveAction(projectId: string, deploymentId: string): Promise<FormState> {
+  const actor = await requireActor(projectId, deploymentId);
+  const result = await runForm({}, () => confirmLiveFromProviderDeploy(db(), actor, { projectId, deploymentId }));
   if (!result.ok) return result.state;
   redirect(`/projects/${projectId}`);
 }

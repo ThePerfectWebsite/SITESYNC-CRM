@@ -8,7 +8,16 @@ import { db } from "../db";
 import { env } from "../env";
 import { describeError } from "../redact";
 import { processWebhookDelivery } from "../integrations/webhooks";
-import { runMaintenanceJob, runPollJob, runSyncJob, runWebhookRetryJob, type SyncJob } from "./handlers";
+import {
+  runHostingPollJob,
+  runHostingSyncJob,
+  runMaintenanceJob,
+  runPollJob,
+  runSyncJob,
+  runWebhookRetryJob,
+  type HostingSyncJob,
+  type SyncJob,
+} from "./handlers";
 import { JOB_SCHEMA, QUEUES } from "./queues";
 
 type JobState = { boss: PgBoss | null; starting: Promise<void> | null };
@@ -48,6 +57,12 @@ async function start(): Promise<void> {
   await boss.work(QUEUES.githubPoll, async () => {
     await runPollJob(database, (job) => enqueueSync(job.linkId, job.mode));
   });
+  await boss.work<HostingSyncJob>(QUEUES.hostingSync, async (jobs) => {
+    for (const job of jobs) await runHostingSyncJob(database, job.data);
+  });
+  await boss.work(QUEUES.hostingPoll, async () => {
+    await runHostingPollJob(database, (job) => enqueueHostingSync(job.linkId));
+  });
   await boss.work<{ inboxId: string }>(QUEUES.webhookProcess, async (jobs) => {
     for (const job of jobs) await processWebhookDelivery(database, job.data.inboxId);
   });
@@ -67,6 +82,16 @@ export async function enqueueSync(linkId: string, mode: SyncJob["mode"]): Promis
     return id ? "queued" : "already_queued";
   }
   await runSyncJob(db(), { linkId, mode });
+  return "ran_inline";
+}
+
+/** Queues a hosting sync (at most one queued + one running per link). */
+export async function enqueueHostingSync(linkId: string): Promise<"queued" | "already_queued" | "ran_inline"> {
+  if (state.boss) {
+    const id = await state.boss.send(QUEUES.hostingSync, { linkId }, { singletonKey: linkId });
+    return id ? "queued" : "already_queued";
+  }
+  await runHostingSyncJob(db(), { linkId });
   return "ran_inline";
 }
 
