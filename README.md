@@ -60,6 +60,12 @@ SiteSync can read commits, pull requests and check runs from GitHub, and counts 
 
 The server runs a small job runner (pg-boss, in the same process). It polls GitHub, processes webhook deliveries and prunes old records. `npm run db:migrate` sets up its `pgboss` schema as the owner role; the app only uses it. Set `SITESYNC_JOBS=off` to run without it: manual refreshes then run immediately instead. See decision [0009](docs/decisions/0009-pg-boss-job-runner.md).
 
+## Continuous integration
+
+Every push to `main` and every pull request runs [.github/workflows/ci.yml](.github/workflows/ci.yml). It has two jobs, which are also the GitHub checks SiteSync shows for this repository:
+- **Lint and typecheck.**
+- **Tests (unit, integration, E2E):** run against a throwaway Postgres 18.6 service with the same roles the Docker init script creates.
+
 ## Health
 
 `GET /health` (no auth) returns the app version, whether the database is reachable, and applied/pending migrations. It returns 503 if the database is unreachable and `"status": "degraded"` if migrations are pending.

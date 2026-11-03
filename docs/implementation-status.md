@@ -90,9 +90,10 @@ None required. To use GitHub: a fine-grained read-only token in `.env`, then add
 
 ### 5. Known limitations / unmet criteria
 - **Verified against the real GitHub API (2026-11-03)**, with a fine-grained token on `ThePerfectWebsite/SITESYNC-CRM` (this project, pushed there; public).
-  - **Confirmed live:** auth (`GET /user`), repository info, rate-limit headers, branch head, commits (5, correct subjects), the open-PR list, the check-runs endpoint (empty: no CI yet), a full sync (health ok), readiness judged at the real head, and idempotent re-sync (0 writes).
+  - **Confirmed live:** auth (`GET /user`), repository info, rate-limit headers, branch head, commits (correct subjects), the open-PR list, check runs from the repo's own CI (seen moving queued → in_progress → completed/success), a full sync (health ok), readiness judged at the real head with passing checks (no blockers), and idempotent re-sync (0 writes).
   - **Live findings, fixed and tested:** a private repo the token isn't granted returns 404, now reported as "GitHub can't see owner/repo…". An empty repository returns 404 for the branch and 409 "Git Repository is empty" for commits; it now syncs as OK with "no commits yet".
-  - **Not yet seen live:** actual check-run results (the repository has no CI workflow), and access to a private repository.
+  - **Not yet seen live:** a *failing* check (blocking is covered by integration tests using the response shapes confirmed live), and access to a private repository.
+- **CI** (`.github/workflows/ci.yml`, added after Phase 3a): lint + typecheck, and unit + integration + E2E against a Postgres 18.6 service with the init script's roles. First run on `70af0dc` passed both jobs.
 - `pr_open` stays informational, as OQ-7 allows: open PRs into production are shown, not blocking. Flagging a PR as "must merge" isn't built.
 - Polling runs every 5 minutes, and a link is synced when it's older than `sync.poll_interval_minutes` (default 10). There's no UI for the interval yet; set the `app_settings` key, range 5–60.
 - One process runs the job runner. Webhook processing is retried by our inbox logic, not pg-boss retries (decision 0009).
