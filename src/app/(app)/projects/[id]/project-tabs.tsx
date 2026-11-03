@@ -5,8 +5,8 @@ import { usePathname } from "next/navigation";
 
 const TABS = [
   { label: "Overview", path: "", available: true },
-  { label: "Tasks", path: "/tasks", available: false },
-  { label: "Changes", path: "/changes", available: false },
+  { label: "Tasks", path: "/tasks", available: true },
+  { label: "Changes", path: "/changes", available: true },
   { label: "Deployments", path: "/deployments", available: false },
   { label: "Activity", path: "/activity", available: true },
   { label: "Settings", path: "/settings", available: true },
@@ -33,7 +33,7 @@ export function ProjectTabs({ projectId }: { projectId: string }) {
               </li>
             );
           }
-          const active = pathname === href;
+          const active = tab.path ? pathname.startsWith(href) : pathname === href;
           return (
             <li key={tab.label}>
               <Link

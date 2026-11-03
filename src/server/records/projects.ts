@@ -17,8 +17,10 @@ import {
 import { noDeploymentsYet, type DeploymentFacts } from "../stages/deployment-facts";
 import { planInitial } from "../stages/machine";
 import { auditActor, type Actor } from "./actor";
+import { instantiateChecklist } from "./checklist";
 import { DomainError, invalidField, isUniqueViolation, notFound, parseInput, type RawInput } from "./errors";
-import { escapeLike, optionalDate, optionalText, requiredText, todayIso, uuid } from "./fields";
+import { appToday } from "./dates";
+import { escapeLike, optionalDate, optionalText, requiredText, uuid } from "./fields";
 
 const projectFields = {
   name: requiredText("a name", 200),
@@ -165,6 +167,7 @@ export async function createProject(db: Db, actor: Actor, input: NewProjectInput
           .where(eq(projectStages.id, update.id));
       }
       const startStage = stages.find((s) => s.id === initial.plan.toId)!;
+      const checklistItems = await instantiateChecklist(tx, project!.id);
 
       const auditEventId = await writeAudit(tx, {
         actor: auditActor(actor),
@@ -175,7 +178,7 @@ export async function createProject(db: Db, actor: Actor, input: NewProjectInput
         websiteId: website.id,
         projectId: project!.id,
         summary: `Project ${project!.name} created at ${startStage.name}`,
-        after: { ...snapshot(project!), template: template.name, initialStage: startStage.key },
+        after: { ...snapshot(project!), template: template.name, initialStage: startStage.key, checklistItems },
         requestId: actor.requestId,
       });
       await tx.insert(stageHistory).values({
@@ -270,7 +273,7 @@ export type ProjectFilters = {
 };
 
 export async function listProjects(db: DbOrTx, filters: ProjectFilters = {}) {
-  const today = filters.today ?? todayIso();
+  const today = filters.today ?? (await appToday(db));
   const overdue = sql<boolean>`(${projects.targetLaunchDate} < ${today}::date AND ${projects.archivedAt} IS NULL AND ${liveNotReached})`;
   const conditions: SQL[] = [];
   if (!filters.includeArchived) conditions.push(isNull(projects.archivedAt));

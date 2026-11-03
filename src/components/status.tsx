@@ -1,25 +1,39 @@
 // Status is always text + icon (spec §9), never colour alone.
 import {
   Archive,
+  Ban,
+  ChevronDown,
+  ChevronUp,
+  Circle,
   CircleCheck,
   CircleDashed,
   CircleDot,
   CirclePause,
   CircleSlash,
+  Flame,
   Hammer,
+  Minus,
   Rocket,
+  ThumbsUp,
   type LucideIcon,
 } from "lucide-react";
-import { CLIENT_STATUS_LABELS, WEBSITE_STATUS_LABELS } from "@/lib/format";
+import {
+  CHANGE_STATUS_LABELS,
+  CLIENT_STATUS_LABELS,
+  TASK_PRIORITY_LABELS,
+  TASK_STATUS_LABELS,
+  WEBSITE_STATUS_LABELS,
+} from "@/lib/format";
 import { cn } from "@/lib/utils";
 
-type Tone = "neutral" | "info" | "success" | "warning" | "muted";
+type Tone = "neutral" | "info" | "success" | "warning" | "danger" | "muted";
 
 const TONES: Record<Tone, string> = {
   neutral: "border-border bg-card text-foreground",
   info: "border-blue-200 bg-blue-50 text-blue-800",
   success: "border-green-200 bg-green-50 text-green-800",
   warning: "border-amber-200 bg-amber-50 text-amber-900",
+  danger: "border-red-200 bg-red-50 text-red-800",
   muted: "border-border bg-muted text-muted-foreground",
 };
 
@@ -61,6 +75,41 @@ export function WebsiteStatus({ status }: { status: keyof typeof WEBSITE_STATUS_
   };
   const [icon, tone] = config[status];
   return <StatusPill icon={icon} label={WEBSITE_STATUS_LABELS[status]} tone={tone} />;
+}
+
+export function TaskStatus({ status }: { status: keyof typeof TASK_STATUS_LABELS }) {
+  const config: Record<typeof status, [LucideIcon, Tone]> = {
+    open: [Circle, "neutral"],
+    in_progress: [CircleDot, "info"],
+    blocked: [Ban, "warning"],
+    done: [CircleCheck, "success"],
+    cancelled: [CircleSlash, "muted"],
+  };
+  const [icon, tone] = config[status];
+  return <StatusPill icon={icon} label={TASK_STATUS_LABELS[status]} tone={tone} />;
+}
+
+export function TaskPriority({ priority }: { priority: keyof typeof TASK_PRIORITY_LABELS }) {
+  const config: Record<typeof priority, [LucideIcon, Tone]> = {
+    low: [ChevronDown, "muted"],
+    normal: [Minus, "neutral"],
+    high: [ChevronUp, "warning"],
+    critical: [Flame, "danger"],
+  };
+  const [icon, tone] = config[priority];
+  return <StatusPill icon={icon} label={TASK_PRIORITY_LABELS[priority]} tone={tone} />;
+}
+
+export function ChangeStatus({ status }: { status: keyof typeof CHANGE_STATUS_LABELS }) {
+  const config: Record<typeof status, [LucideIcon, Tone]> = {
+    proposed: [CircleDashed, "info"],
+    accepted: [ThumbsUp, "neutral"],
+    in_progress: [CircleDot, "warning"],
+    done: [CircleCheck, "success"],
+    rejected: [CircleSlash, "muted"],
+  };
+  const [icon, tone] = config[status];
+  return <StatusPill icon={icon} label={CHANGE_STATUS_LABELS[status]} tone={tone} />;
 }
 
 export function StagePill({

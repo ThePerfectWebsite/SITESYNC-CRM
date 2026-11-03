@@ -10,6 +10,7 @@ import { isUuid } from "@/lib/ids";
 import { requireSession } from "@/server/auth/next";
 import { db } from "@/server/db";
 import { clientOptions } from "@/server/records/clients";
+import { appToday } from "@/server/records/dates";
 import { listProjects, stageFilterOptions } from "@/server/records/projects";
 
 export const metadata: Metadata = { title: "Projects" };
@@ -27,7 +28,8 @@ export default async function ProjectsPage({ searchParams }: PageProps<"/project
   const stageKey = stages.find((s) => s.key === params.stage)?.key ?? null;
   const overdue = params.overdue === "1";
   const includeArchived = params.archived === "1";
-  const rows = await listProjects(database, { q, clientId, stageKey, overdue, includeArchived });
+  const today = await appToday(database);
+  const rows = await listProjects(database, { q, clientId, stageKey, overdue, includeArchived, today });
   const filtered = Boolean(q || clientId || stageKey || overdue || includeArchived);
 
   return (

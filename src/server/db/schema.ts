@@ -432,6 +432,8 @@ export const projectStages = pgTable(
     uniqueIndex("project_stages_one_current_key")
       .on(t.projectId)
       .where(sql`${t.status} = 'current'`),
+    // Target of tasks' composite FK: a task's stage belongs to the task's project.
+    unique("project_stages_id_project_id_key").on(t.id, t.projectId),
   ],
 );
 
@@ -481,5 +483,201 @@ export const stageHistory = pgTable(
       sql`(${t.transition} = 'go_live') = (${t.actorType} = 'system') AND (${t.transition} <> 'go_live' OR ${t.deploymentId} IS NOT NULL)`,
     ),
     index("stage_history_project_idx").on(t.projectId, t.createdAt.desc()),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// Phase 2 — work tracking (spec §3.14–§3.17)
+
+export const TASK_STATUSES = ["open", "in_progress", "blocked", "done", "cancelled"] as const;
+export const TASK_PRIORITIES = ["low", "normal", "high", "critical"] as const;
+export const CHANGE_CATEGORIES = [
+  "feature",
+  "fix",
+  "content",
+  "design",
+  "technical",
+  "scope",
+  "deployment",
+  "other",
+] as const;
+export const CHANGE_STATUSES = ["proposed", "accepted", "in_progress", "done", "rejected"] as const;
+export const BLOCKER_TYPES = [
+  "critical_task",
+  "checklist_item",
+  "failing_check",
+  "pr_open",
+  "preview_not_ready",
+  "other",
+] as const;
+
+export type TaskStatus = (typeof TASK_STATUSES)[number];
+export type TaskPriority = (typeof TASK_PRIORITIES)[number];
+export type ChangeCategory = (typeof CHANGE_CATEGORIES)[number];
+export type ChangeStatus = (typeof CHANGE_STATUSES)[number];
+export type BlockerType = (typeof BLOCKER_TYPES)[number];
+
+// §3.14
+export const tasks = pgTable(
+  "tasks",
+  {
+    id: id(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "restrict" }),
+    title: text("title").notNull(),
+    description: text("description"),
+    status: text("status").$type<TaskStatus>().notNull().default("open"),
+    priority: text("priority").$type<TaskPriority>().notNull().default("normal"),
+    dueDate: date("due_date", { mode: "string" }),
+    referenceUrl: text("reference_url"),
+    projectStageId: uuid("project_stage_id"),
+    completedAt: tsNull("completed_at"),
+    completedBy: uuid("completed_by").references(() => users.id, { onDelete: "restrict" }),
+    archivedAt: archivedAt(),
+    archivedBy: archivedBy(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    // The optional stage must be one of the task's project's stages.
+    foreignKey({
+      name: "tasks_stage_same_project_fk",
+      columns: [t.projectStageId, t.projectId],
+      foreignColumns: [projectStages.id, projectStages.projectId],
+    }).onDelete("restrict"),
+    check("tasks_title_length", sql`length(${t.title}) BETWEEN 1 AND 300`),
+    check("tasks_description_length", sql`length(${t.description}) <= 20000`),
+    check("tasks_status_check", sql`${t.status} IN (${inList(TASK_STATUSES)})`),
+    check("tasks_priority_check", sql`${t.priority} IN (${inList(TASK_PRIORITIES)})`),
+    check(
+      "tasks_reference_url_format",
+      sql`length(${t.referenceUrl}) <= 2048 AND ${t.referenceUrl} ~ '^https?://'`,
+    ),
+    check("tasks_completed_check", sql`(${t.status} = 'done') = (${t.completedAt} IS NOT NULL)`),
+    check("tasks_completed_by_check", sql`(${t.completedAt} IS NULL) = (${t.completedBy} IS NULL)`),
+    // Target of changes' composite FK: a change's task belongs to the change's project.
+    unique("tasks_id_project_id_key").on(t.id, t.projectId),
+    index("tasks_project_status_idx").on(t.projectId, t.status),
+    index("tasks_open_due_idx")
+      .on(t.dueDate)
+      .where(sql`${t.status} NOT IN ('done','cancelled') AND ${t.archivedAt} IS NULL`),
+    index("tasks_open_critical_idx")
+      .on(t.priority)
+      .where(sql`${t.priority} = 'critical' AND ${t.status} NOT IN ('done','cancelled')`),
+    index("tasks_title_trgm_idx").using("gin", sql`${t.title} gin_trgm_ops`),
+  ],
+);
+
+// §3.15 — shipped_in_deployment_id gets its FK when deployments exists (decision 0007).
+export const changes = pgTable(
+  "changes",
+  {
+    id: id(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "restrict" }),
+    title: text("title").notNull(),
+    description: text("description"),
+    category: text("category").$type<ChangeCategory>().notNull(),
+    status: text("status").$type<ChangeStatus>().notNull().default("proposed"),
+    requestedByContactId: uuid("requested_by_contact_id").references(() => contacts.id, {
+      onDelete: "restrict",
+    }),
+    taskId: uuid("task_id"),
+    shippedInDeploymentId: uuid("shipped_in_deployment_id"),
+    archivedAt: archivedAt(),
+    archivedBy: archivedBy(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    // The optional linked task must belong to the change's project.
+    foreignKey({
+      name: "changes_task_same_project_fk",
+      columns: [t.taskId, t.projectId],
+      foreignColumns: [tasks.id, tasks.projectId],
+    }).onDelete("restrict"),
+    check("changes_title_length", sql`length(${t.title}) BETWEEN 1 AND 300`),
+    check("changes_description_length", sql`length(${t.description}) <= 20000`),
+    check("changes_category_check", sql`${t.category} IN (${inList(CHANGE_CATEGORIES)})`),
+    check("changes_status_check", sql`${t.status} IN (${inList(CHANGE_STATUSES)})`),
+    index("changes_project_created_idx").on(t.projectId, t.createdAt.desc()),
+    index("changes_project_category_idx").on(t.projectId, t.category),
+  ],
+);
+
+// §3.16
+export const releaseChecklistItems = pgTable(
+  "release_checklist_items",
+  {
+    id: id(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "restrict" }),
+    key: text("key").notNull(),
+    label: text("label").notNull(),
+    required: boolean("required").notNull().default(true),
+    position: integer("position").notNull(),
+    checkedAt: tsNull("checked_at"),
+    checkedBy: uuid("checked_by").references(() => users.id, { onDelete: "restrict" }),
+    note: text("note"),
+    archivedAt: archivedAt(),
+    archivedBy: archivedBy(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    check("release_checklist_items_key_format", sql`${t.key} ~ '^[a-z][a-z0-9_]{0,49}$'`),
+    check("release_checklist_items_label_length", sql`length(${t.label}) BETWEEN 1 AND 300`),
+    check(
+      "release_checklist_items_checked_check",
+      sql`(${t.checkedAt} IS NULL) = (${t.checkedBy} IS NULL)`,
+    ),
+    check("release_checklist_items_note_length", sql`length(${t.note}) <= 2000`),
+    uniqueIndex("release_checklist_items_key_key").on(t.projectId, t.key),
+  ],
+);
+
+// §3.17 — revoked, never deleted.
+export const readinessWaivers = pgTable(
+  "readiness_waivers",
+  {
+    id: id(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "restrict" }),
+    blockerKey: text("blocker_key").notNull(),
+    blockerType: text("blocker_type").$type<BlockerType>().notNull(),
+    blockerSnapshot: jsonb("blocker_snapshot").notNull(),
+    reason: text("reason").notNull(),
+    waivedBy: uuid("waived_by")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    commitSha: text("commit_sha"),
+    revokedAt: tsNull("revoked_at"),
+    revokedBy: uuid("revoked_by").references(() => users.id, { onDelete: "restrict" }),
+    auditEventId: uuid("audit_event_id")
+      .notNull()
+      .references(() => auditEvents.id, { onDelete: "restrict" }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    check("readiness_waivers_blocker_key_length", sql`length(${t.blockerKey}) BETWEEN 1 AND 200`),
+    check(
+      "readiness_waivers_blocker_type_check",
+      sql`${t.blockerType} IN (${inList(BLOCKER_TYPES)})`,
+    ),
+    check("readiness_waivers_snapshot_size", sql`octet_length(${t.blockerSnapshot}::text) <= 4096`),
+    check("readiness_waivers_reason_length", sql`length(${t.reason}) BETWEEN 3 AND 2000`),
+    check("readiness_waivers_commit_sha_format", sql`${t.commitSha} ~ '^[0-9a-f]{40}$'`),
+    check(
+      "readiness_waivers_revoked_check",
+      sql`(${t.revokedAt} IS NULL) = (${t.revokedBy} IS NULL)`,
+    ),
+    uniqueIndex("readiness_waivers_active_key")
+      .on(t.projectId, t.blockerKey)
+      .where(sql`${t.revokedAt} IS NULL`),
   ],
 );

@@ -1,18 +1,28 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
+import { ActionButton } from "@/components/forms/action-button";
 import { FormMessage } from "@/components/forms/controls";
 import { Section } from "@/components/page";
 import { Card, CardContent } from "@/components/ui/card";
+import { formatDateTime } from "@/lib/format";
 import { isUuid } from "@/lib/ids";
 import { requireSession } from "@/server/auth/next";
 import { db } from "@/server/db";
+import { listChecklist } from "@/server/records/checklist";
 import { getProject } from "@/server/records/projects";
 import { websiteOptions } from "@/server/records/websites";
 import { noDeploymentsYet } from "@/server/stages/deployment-facts";
 import { loadStageState } from "@/server/stages/service";
 import { moveStageAction, updateProjectAction } from "../../actions";
 import { ProjectForm } from "../../project-form";
+import {
+  addChecklistFromTemplateAction,
+  archiveChecklistItemAction,
+  restoreChecklistItemAction,
+  setChecklistItemAction,
+} from "../../work-actions";
 import { MoveStageForm } from "../stage-controls";
+import { ChecklistItemForm } from "./checklist-item";
 
 export const metadata: Metadata = { title: "Project settings" };
 
@@ -26,10 +36,11 @@ export default async function ProjectSettingsPage({ params, searchParams }: Page
   const { project } = row;
   const { saved } = await searchParams;
   const archived = Boolean(project.archivedAt);
-  const [websites, state, hasDeployments] = await Promise.all([
+  const [websites, state, hasDeployments, checklist] = await Promise.all([
     websiteOptions(database),
     loadStageState(database, project),
     noDeploymentsYet.hasDeployments(database, id),
+    listChecklist(database, id, true),
   ]);
   const current = state.stages.find((s) => s.status === "current")!;
 
@@ -62,9 +73,87 @@ export default async function ProjectSettingsPage({ params, searchParams }: Page
         )}
       </Section>
 
-      <Section title="Release checklist">
-        <p className="text-sm text-muted-foreground">The project&apos;s release checklist arrives in the next phase.</p>
-      </Section>
+      <div id="checklist">
+        <Section
+          title="Release checklist"
+          actions={
+            archived ? null : (
+              <ActionButton
+                action={addChecklistFromTemplateAction.bind(null, id)}
+                label="Add checklist from template"
+                pendingLabel="Adding…"
+              />
+            )
+          }
+        >
+          <p className="text-sm text-muted-foreground">
+            Unchecked required items block release readiness. The template is in Settings; adding from it skips items
+            this project already has.
+          </p>
+          {checklist.length ? (
+            <Card>
+              <CardContent>
+                <ul className="grid gap-3">
+                  {checklist
+                    .filter((item) => !item.archivedAt)
+                    .map((item) => (
+                      <li key={item.id} className="grid gap-1 border-b pb-3 last:border-b-0 last:pb-0">
+                        <ChecklistItemForm
+                          action={setChecklistItemAction.bind(null, id, item.id)}
+                          itemId={item.id}
+                          label={item.label}
+                          required={item.required}
+                          checked={Boolean(item.checkedAt)}
+                          note={item.note ?? ""}
+                          checkedBy={
+                            item.checkedAt
+                              ? `Checked by ${item.checkedByName ?? "operator"}, ${formatDateTime(item.checkedAt)}`
+                              : undefined
+                          }
+                          disabled={archived}
+                        />
+                        {archived ? null : (
+                          <div>
+                            <ActionButton
+                              action={archiveChecklistItemAction.bind(null, id, item.id)}
+                              label="Remove from this project"
+                              variant="ghost"
+                              accessibleLabel={`Remove “${item.label}” from this project`}
+                            />
+                          </div>
+                        )}
+                      </li>
+                    ))}
+                </ul>
+              </CardContent>
+            </Card>
+          ) : (
+            <p className="text-sm text-muted-foreground">This project has no checklist items.</p>
+          )}
+          {checklist.some((item) => item.archivedAt) ? (
+            <details>
+              <summary className="cursor-pointer text-sm text-muted-foreground">Removed items</summary>
+              <ul className="mt-2 grid gap-2">
+                {checklist
+                  .filter((item) => item.archivedAt)
+                  .map((item) => (
+                    <li key={item.id} className="flex flex-wrap items-center gap-3 text-sm">
+                      {item.label}
+                      {archived ? null : (
+                        <ActionButton
+                          action={restoreChecklistItemAction.bind(null, id, item.id)}
+                          label="Restore"
+                          variant="ghost"
+                          accessibleLabel={`Restore “${item.label}”`}
+                        />
+                      )}
+                    </li>
+                  ))}
+              </ul>
+            </details>
+          ) : null}
+        </Section>
+      </div>
 
       {archived ? null : (
         <Section title="Archive">

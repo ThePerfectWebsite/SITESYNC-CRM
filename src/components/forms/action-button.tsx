@@ -11,16 +11,19 @@ export function ActionButton({
   label,
   pendingLabel,
   variant = "outline",
+  accessibleLabel,
 }: {
   action: (state: FormState, formData: FormData) => Promise<FormState>;
   label: string;
   pendingLabel?: string;
   variant?: React.ComponentProps<typeof Button>["variant"];
+  /** Screen-reader name when several identical buttons share a page. */
+  accessibleLabel?: string;
 }) {
   const [state, formAction] = useActionState(action, {});
   return (
-    <form key={state.key} action={formAction} className="grid gap-2">
-      <SubmitButton variant={variant} pendingLabel={pendingLabel}>
+    <form key={state.key} action={formAction} className="grid justify-items-start gap-2">
+      <SubmitButton variant={variant} pendingLabel={pendingLabel} accessibleLabel={accessibleLabel}>
         {label}
       </SubmitButton>
       <FormMessage message={state.message} />

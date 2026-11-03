@@ -36,7 +36,7 @@ Build: migrations for `clients`, `contacts`, `websites`, `stage_templates`, `sta
 
 Tests: composite FK rejects cross-client website (DB + service); stage transitions incl. invalid ones; `go_live` refuses manual-record / non-provider deployments and skipping over LIVE is refused when an integration-backed production link exists (decision 0004); atomicity (inject failure after history insert → nothing persisted); user cannot move to LIVE; one-current-stage index; archive/restore; archived records hidden by default; template change doesn't affect existing projects; E2E create client → website → project → advance stage → activity shows it.
 
-## Phase 2 — Work tracking
+## Phase 2 — Work tracking ✅ (2026-11-03)
 
 Build: `tasks`, `changes`, `release_checklist_items`, `readiness_waivers`; checklist template in settings; `computeReadiness()` (§6) with manual blockers only; waive/revoke with audit; dashboard metrics (stage counts chart, overdue, deadlines, recent activity); tabs 10, 11, checklist on 14, readiness on 9.
 

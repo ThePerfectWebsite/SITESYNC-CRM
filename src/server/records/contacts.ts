@@ -23,7 +23,8 @@ export const contactSchema = z.object({
   phone: optionalText(50),
   roleTitle: optionalText(200),
   isPrimary: z
-    .union([z.boolean(), z.literal("on"), z.literal("true"), z.literal(""), z.null(), z.undefined()])
+    .union([z.boolean(), z.literal("on"), z.literal("true"), z.literal(""), z.null()])
+    .optional()
     .transform((value) => value === true || value === "on" || value === "true"),
   notes: optionalText(5000),
 });

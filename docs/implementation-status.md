@@ -5,13 +5,92 @@
 | S — Specification | **Done — approved by operator** | 2026-11-03 |
 | 0 — Foundation | **Done** | 2026-11-03 |
 | 1 — Core records | **Done** | 2026-11-03 |
-| 2 — Work tracking | Not started (ready) | |
-| 3a — GitHub read sync | Not started | |
+| 2 — Work tracking | **Done** | 2026-11-03 |
+| 3a — GitHub read sync | Not started (ready) | |
 | 3b — Hosting read sync | Not started | |
 | 4 — Approval-gated deployment | Not started | |
 | 5 — Operations & polish | Not started | |
 
-**Current phase for the next session:** Phase 2 — Work tracking.
+**Current phase for the next session:** Phase 3a — GitHub read sync.
+
+---
+
+## Handoff — Phase 2 (2026-11-03)
+
+### 1. Phase completed and key areas changed
+Phase 2 — Work tracking. Committed on `main` after Phase 1 (`bc21374`).
+- **Migrations:**
+  - `0005_work_tracking` (generated): `tasks`, `changes`, `release_checklist_items`, `readiness_waivers`. It includes:
+    - every §3.14–§3.17 check and index;
+    - `tasks` `done ⇔ completed_at`;
+    - the one-active-waiver partial unique index;
+    - a trigram index on task titles.
+    - The statement order was hand-fixed so `project_stages (id, project_id)` is unique before the FK that needs it.
+  - Two composite FKs keep links within one project: a task's stage, and a change's task (decision 0008 §C).
+  - `0006_work_tracking_triggers_grants_seed` (hand-written): `updated_at` triggers; `SELECT, INSERT, UPDATE` grants (no `DELETE`); and the default `release_checklist.template` seed (10 items, `ON CONFLICT DO NOTHING`).
+- **Services** (`src/server/records/`):
+  - `tasks`: complete/reopen are the only way in and out of `done`; an archived project's work is read-only; overdue and due-between queries.
+  - `changes`: the requesting contact must belong to the project's client; the task must be in the same project.
+  - `checklist`: template get/save (existing keys kept, new keys from labels); instantiated on project creation; "add from template" skips existing keys; check/uncheck with a note; archive/restore.
+  - `readiness`: pure `evaluateReadiness`/`waiverApplies`, `computeReadiness`, waive (only current, waivable blockers; reason required; optional commit SHA), revoke.
+  - `dates`: app time zone, `todayIn`, `addDays`, `isOverdue`.
+  - `search` now includes tasks.
+- **Screens:**
+  - 10 Tasks tab: open/all/archived views, add, complete/reopen, detail and edit page.
+  - 11 Changes tab: list, log, detail and edit page.
+  - 9 Overview: readiness summary with waive/revoke, and a readiness note on "Advance to Ready to Deploy" (§5.1).
+  - 14 Project settings: release checklist with check/note/remove/restore and "Add checklist from template".
+  - 4 Dashboard: stage chart, overdue projects and tasks, next 14 days (tasks due, target launches), recent activity.
+  - 19 Settings: checklist template editor and time zone.
+  - Quick-create Task (`/tasks/new`) and Change (`/changes/new`, picks the project first).
+- **Decision 0008:** readiness covers manual blockers only until providers exist; "today" comes from the app time zone; the same-project composite FKs.
+
+### 2. Commands run and actual results
+- `npm run lint` → clean. `npm run typecheck` → passes.
+- `npm run db:migrate` (dev) → `7/7 applied, 0 pending`. The test DB is reset and re-migrated by the suites.
+- `npm test` → **12 files, 185 tests passed**. New in Phase 2:
+  - `readiness-and-dates` unit tests (16): waiver matching incl. commit-scoped, unwaivable blockers, inactive waivers; dates across time zones, DST, month/year/leap boundaries; "due today isn't overdue"; checklist key derivation.
+  - `work` integration tests (22):
+    - task validation and the complete/reopen invariants, in the service and the DB check;
+    - the composite FKs;
+    - archived projects are read-only;
+    - overdue and next-14-days boundaries;
+    - the `app.time_zone` setting and its fallback;
+    - task search;
+    - change contact/task rules and audit;
+    - checklist instantiation, "add from template" skipping existing keys, template key stability, check/uncheck DB check;
+    - readiness: critical tasks; done/cancelled/archived clear; non-required/archived items don't block; waive needs a reason and is audited; one active waiver; revoke; re-waive; commit-scoped; no `DELETE` grants.
+- `npm run test:e2e` → **23 passed** (17 from earlier phases + 6 new):
+  - project starts with 10 checklist blockers;
+  - a critical task blocks readiness until done; the priority choice survives a validation error;
+  - checking 9 items, then waive (reason required) → ready, revoke → not ready, check the last → ready; activity shows the waive and the revoke;
+  - change needs a category;
+  - quick-create task → dashboard overdue → Ctrl-K finds it;
+  - template gains an item, time zone validated and canonicalised, older project picks the item up.
+- `npm run build` → succeeds; all routes dynamic.
+- Screens checked at 1280 px and 768 px. The checklist rows were cramped at 768 px; they now stack below 1024 px.
+- Auth coverage: every `(app)` page calls `requireSession()` (directly or via `loadProjectTab`), and every exported record Server Action calls `requireActor(...)`.
+- Secret scan → clean.
+
+### 3. Setup steps and env var names
+No new env vars. Run `npm run db:migrate`. The time zone defaults to the server's; set it under Settings → Time zone.
+
+### 4. Credentials/config the operator still needs to provide
+None.
+
+### 5. Known limitations / unmet criteria
+- **Readiness = manual blockers only** (decision 0008). Failing checks, open PRs, preview state and "no production target" arrive with Phases 3a–4. The Phase 4 gate must recompute readiness with them and the proposed commit.
+- Commit-scoped waivers can be created now but never match on the overview, because there's no proposed commit until deployments exist.
+- `changes.shipped_in_deployment_id` has no FK and no UI until deployments exist (decision 0007).
+- If saving the checklist template fails validation (e.g. an existing item's label cleared), the form shows the error but resets to the saved template, so other unsaved edits in that submit are lost.
+- Quick-create Task has no stage picker (set it on the task page). Quick-create Change picks the project, then logs the change on that project's Changes tab.
+- Projects created in Phase 1 (before this migration) have no checklist until you use "Add checklist from template" on their Settings tab.
+
+### 6. Next phase and decisions needed first
+Next: **Phase 3a — GitHub read sync.** Before starting:
+- Decide on a GitHub token: a fine-grained PAT with read-only access to the relevant repos is suggested; its env var name is the operator's choice (spec §10 suggests `GITHUB_TOKEN`). Without one, Phase 3a can still be built and tested against a mocked API.
+- pg-boss gets pinned in 3a (decision 0005 lists 12.38.0 as the latest seen), and `pruneLoginAttempts()` gets scheduled then (Phase 0 limitation).
+- Readiness needs the `failing_check` blocker for the proposed commit. Plug it into `computeReadiness` alongside `manualBlockers` (decision 0008).
 
 ---
 

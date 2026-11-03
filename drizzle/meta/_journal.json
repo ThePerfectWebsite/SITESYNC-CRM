@@ -36,6 +36,20 @@
       "when": 1793706467093,
       "tag": "0004_core_records_triggers_grants_seed",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1793710360466,
+      "tag": "0005_work_tracking",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1793710362743,
+      "tag": "0006_work_tracking_triggers_grants_seed",
+      "breakpoints": true
     }
   ]
 }

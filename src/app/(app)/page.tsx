@@ -1,29 +1,64 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { AlertTriangle, LayoutDashboard } from "lucide-react";
+import { AlertTriangle, CalendarClock, LayoutDashboard } from "lucide-react";
 import { EmptyState, PageHeader, Section } from "@/components/page";
-import { ActivityFeed, ProjectsTable } from "@/components/records";
+import { ActivityFeed } from "@/components/records";
+import { TaskPriority } from "@/components/status";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { formatDate } from "@/lib/format";
 import { requireSession } from "@/server/auth/next";
 import { db } from "@/server/db";
 import { listActivity } from "@/server/records/activity";
+import { addDays, appToday } from "@/server/records/dates";
 import { listProjects, projectCountsByStage } from "@/server/records/projects";
+import { overdueTasks, tasksDueBetween } from "@/server/records/tasks";
 
 export const metadata: Metadata = { title: "Dashboard" };
 
-// Screen 4, Phase 1 skeleton: projects per stage, overdue projects, recent
-// activity. Tasks, deadlines, deployment alerts and approvals join later.
+const DEADLINE_DAYS = 14;
+const LIST_LIMIT = 10;
+
+type Deadline = { key: string; date: string; title: string; href: string; detail: string; kind: "task" | "launch" };
+
+// Screen 4: projects per stage, overdue work, deadlines in the next 14 days and
+// recent activity. Deployment alerts, sync errors and approvals join in Phases 3–4.
 export default async function DashboardPage() {
   const session = await requireSession();
   const database = db();
-  const [counts, overdue, activity] = await Promise.all([
+  const today = await appToday(database);
+  const horizon = addDays(today, DEADLINE_DAYS);
+  const [counts, overdueProjects, lateTasks, dueTasks, upcomingLaunches, activity] = await Promise.all([
     projectCountsByStage(database),
-    listProjects(database, { overdue: true }),
+    listProjects(database, { overdue: true, today }),
+    overdueTasks(database, today),
+    tasksDueBetween(database, today, horizon),
+    listProjects(database, { today }).then((rows) =>
+      rows.filter((p) => p.targetLaunchDate && p.targetLaunchDate >= today && p.targetLaunchDate <= horizon && !p.overdue),
+    ),
     listActivity(database, { excludeAuth: true }, 15),
   ]);
   const total = counts.reduce((sum, c) => sum + c.count, 0);
   const max = Math.max(1, ...counts.map((c) => c.count));
+
+  const deadlines: Deadline[] = [
+    ...dueTasks.map((t) => ({
+      key: `task-${t.id}`,
+      date: t.dueDate!,
+      title: t.title,
+      href: `/projects/${t.projectId}/tasks/${t.id}`,
+      detail: `Task · ${t.projectName}`,
+      kind: "task" as const,
+    })),
+    ...upcomingLaunches.map((p) => ({
+      key: `launch-${p.id}`,
+      date: p.targetLaunchDate!,
+      title: `${p.name} target launch`,
+      href: `/projects/${p.id}`,
+      detail: `Project · ${p.clientName}`,
+      kind: "launch" as const,
+    })),
+  ].sort((a, b) => a.date.localeCompare(b.date) || a.title.localeCompare(b.title));
 
   return (
     <div className="grid gap-8">
@@ -66,28 +101,75 @@ export default async function DashboardPage() {
             </Card>
           </Section>
 
+          <Section title="Overdue">
+            {lateTasks.length === 0 && overdueProjects.length === 0 ? (
+              <p className="text-sm text-muted-foreground">Nothing overdue.</p>
+            ) : (
+              <Card>
+                <CardContent>
+                  <ul className="grid gap-2.5" aria-label="Overdue work">
+                    {overdueProjects.slice(0, LIST_LIMIT).map((p) => (
+                      <li key={`p-${p.id}`} className="flex flex-wrap items-baseline gap-x-2 text-sm">
+                        <AlertTriangle className="size-3.5 shrink-0 self-center text-destructive" aria-hidden="true" />
+                        <Link href={`/projects/${p.id}`} className="font-medium text-primary hover:underline">
+                          {p.name}
+                        </Link>
+                        <span className="text-muted-foreground">launch was due {formatDate(p.targetLaunchDate)}</span>
+                      </li>
+                    ))}
+                    {lateTasks.slice(0, LIST_LIMIT).map((t) => (
+                      <li key={`t-${t.id}`} className="flex flex-wrap items-baseline gap-x-2 text-sm">
+                        <AlertTriangle className="size-3.5 shrink-0 self-center text-destructive" aria-hidden="true" />
+                        <Link href={`/projects/${t.projectId}/tasks/${t.id}`} className="font-medium text-primary hover:underline">
+                          {t.title}
+                        </Link>
+                        <span className="text-muted-foreground">
+                          due {formatDate(t.dueDate)} · {t.projectName}
+                        </span>
+                        {t.priority === "critical" || t.priority === "high" ? <TaskPriority priority={t.priority} /> : null}
+                      </li>
+                    ))}
+                  </ul>
+                  {lateTasks.length > LIST_LIMIT || overdueProjects.length > LIST_LIMIT ? (
+                    <p className="mt-3 text-xs text-muted-foreground">Showing the first {LIST_LIMIT} of each.</p>
+                  ) : null}
+                </CardContent>
+              </Card>
+            )}
+          </Section>
+
+          <Section title={`Next ${DEADLINE_DAYS} days`}>
+            {deadlines.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No deadlines in the next {DEADLINE_DAYS} days.</p>
+            ) : (
+              <Card>
+                <CardContent>
+                  <ul className="grid gap-2.5" aria-label={`Deadlines in the next ${DEADLINE_DAYS} days`}>
+                    {deadlines.slice(0, 20).map((d) => (
+                      <li key={d.key} className="grid grid-cols-[6.5rem_1fr] gap-3 text-sm">
+                        <span className="flex items-center gap-1.5 tabular-nums text-muted-foreground">
+                          <CalendarClock className="size-3.5" aria-hidden="true" />
+                          {d.date === today ? "Today" : formatDate(d.date)}
+                        </span>
+                        <span className="min-w-0">
+                          <Link href={d.href} className="font-medium text-primary hover:underline">
+                            {d.title}
+                          </Link>
+                          <span className="block text-xs text-muted-foreground">{d.detail}</span>
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </CardContent>
+              </Card>
+            )}
+          </Section>
+
           <Section title="Recent activity">
             <ActivityFeed items={activity} />
           </Section>
         </div>
       )}
-
-      {overdue.length ? (
-        <Section
-          title="Overdue projects"
-          actions={
-            <Link href="/projects?overdue=1" className="text-sm text-primary hover:underline">
-              View all
-            </Link>
-          }
-        >
-          <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
-            <AlertTriangle className="size-4 text-destructive" aria-hidden="true" />
-            Target launch date passed and not yet Live.
-          </p>
-          <ProjectsTable rows={overdue.slice(0, 10)} />
-        </Section>
-      ) : null}
     </div>
   );
 }

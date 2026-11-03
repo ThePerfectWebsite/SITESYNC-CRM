@@ -145,15 +145,23 @@ export function SubmitButton({
   pendingLabel,
   variant,
   className,
+  accessibleLabel,
 }: {
   children: React.ReactNode;
   pendingLabel?: string;
+  accessibleLabel?: string;
   variant?: React.ComponentProps<typeof Button>["variant"];
   className?: string;
 }) {
   const { pending } = useFormStatus();
   return (
-    <Button type="submit" variant={variant} className={cn("h-9", className)} disabled={pending}>
+    <Button
+      type="submit"
+      variant={variant}
+      className={cn("h-9", className)}
+      disabled={pending}
+      aria-label={accessibleLabel}
+    >
       {pending && pendingLabel ? pendingLabel : children}
     </Button>
   );

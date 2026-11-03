@@ -10,10 +10,12 @@ import { cn } from "@/lib/utils";
 import { requireSession } from "@/server/auth/next";
 import { db } from "@/server/db";
 import { getProject } from "@/server/records/projects";
+import { computeReadiness } from "@/server/records/readiness";
 import { noDeploymentsYet } from "@/server/stages/deployment-facts";
 import { LIVE_EXPLANATION, NO_HOSTING_EXPLANATION, linearStages } from "@/server/stages/machine";
 import { loadStageState } from "@/server/stages/service";
 import { moveStageAction } from "../actions";
+import { ReadinessPanel } from "./readiness-panel";
 import { MoveStageForm, QuickMove, RestoreForm } from "./stage-controls";
 
 export const metadata: Metadata = { title: "Project overview" };
@@ -33,7 +35,7 @@ export default async function ProjectOverviewPage({ params }: PageProps<"/projec
   const row = await getProject(database, id);
   if (!row) notFound();
   const { project } = row;
-  const state = await loadStageState(database, project);
+  const [state, readiness] = await Promise.all([loadStageState(database, project), computeReadiness(database, id)]);
   const enteredAt = new Map(state.stages.map((s) => [s.id, s.enteredAt]));
 
   const current = state.stages.find((s) => s.status === "current")!;
@@ -101,7 +103,17 @@ export default async function ProjectOverviewPage({ params }: PageProps<"/projec
                     <QuickMove action={move} currentId={current.id} targetId={heldFrom.id} label={`Resume at ${heldFrom.name}`} />
                   ) : null}
                   {current.kind === "linear" && next && next.role !== "live" ? (
-                    <QuickMove action={move} currentId={current.id} targetId={next.id} label={`Advance to ${next.name}`} />
+                    <div className="grid gap-2">
+                      {next.role === "ready_to_deploy" ? (
+                        <p className="text-sm text-muted-foreground">
+                          Readiness for {next.name}:{" "}
+                          {readiness.ready
+                            ? "no open blockers."
+                            : `${readiness.blockers.length} open blocker${readiness.blockers.length === 1 ? "" : "s"} (see Readiness below). Moving on isn't blocked.`}
+                        </p>
+                      ) : null}
+                      <QuickMove action={move} currentId={current.id} targetId={next.id} label={`Advance to ${next.name}`} />
+                    </div>
                   ) : null}
                   {current.kind === "linear" && next?.role === "live" ? (
                     <p className="text-sm text-muted-foreground">
@@ -121,9 +133,7 @@ export default async function ProjectOverviewPage({ params }: PageProps<"/projec
         </Section>
 
         <Section title="Readiness">
-          <p className="text-sm text-muted-foreground">
-            Release readiness (tasks, checklist and blockers) arrives with work tracking in the next phase.
-          </p>
+          <ReadinessPanel projectId={id} readiness={readiness} readOnly={Boolean(project.archivedAt)} />
         </Section>
 
         <Section title="Deployments">

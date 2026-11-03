@@ -34,7 +34,7 @@ export function GlobalSearch() {
   return (
     <form role="search" action="/search" className="relative w-full max-w-sm">
       <label htmlFor="global-search" className="sr-only">
-        Search clients, websites and projects
+        Search clients, websites, projects and tasks
       </label>
       <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
       <input
@@ -44,7 +44,7 @@ export function GlobalSearch() {
         type="search"
         defaultValue={params.get("q") ?? ""}
         maxLength={100}
-        placeholder="Search clients, websites, projects"
+        placeholder="Search clients, projects, tasks"
         aria-keyshortcuts="Control+K Meta+K"
         className="h-9 w-full rounded-md border border-input bg-card pr-14 pl-8 text-sm outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
       />
@@ -55,7 +55,7 @@ export function GlobalSearch() {
   );
 }
 
-/** Quick-create menu. Tasks and changes arrive with work tracking. */
+/** Quick-create menu (spec §9). */
 export function QuickCreate() {
   return (
     <DropdownMenu>
@@ -78,8 +78,12 @@ export function QuickCreate() {
           <Link href="/projects/new">Project</Link>
         </DropdownMenuItem>
         <DropdownMenuSeparator />
-        <DropdownMenuItem disabled>Task (coming soon)</DropdownMenuItem>
-        <DropdownMenuItem disabled>Change (coming soon)</DropdownMenuItem>
+        <DropdownMenuItem asChild>
+          <Link href="/tasks/new">Task</Link>
+        </DropdownMenuItem>
+        <DropdownMenuItem asChild>
+          <Link href="/changes/new">Change</Link>
+        </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   );

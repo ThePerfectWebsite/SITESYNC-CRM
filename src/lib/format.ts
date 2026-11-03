@@ -36,3 +36,37 @@ export const WEBSITE_STATUS_LABELS = {
 export function optionsFrom<T extends Record<string, string>>(labels: T) {
   return Object.entries(labels).map(([value, label]) => ({ value, label }));
 }
+
+export const TASK_STATUS_LABELS = {
+  open: "Open",
+  in_progress: "In progress",
+  blocked: "Blocked",
+  done: "Done",
+  cancelled: "Cancelled",
+} as const;
+
+export const TASK_PRIORITY_LABELS = {
+  low: "Low",
+  normal: "Normal",
+  high: "High",
+  critical: "Critical",
+} as const;
+
+export const CHANGE_CATEGORY_LABELS = {
+  feature: "Feature",
+  fix: "Fix",
+  content: "Content",
+  design: "Design",
+  technical: "Technical",
+  scope: "Scope",
+  deployment: "Deployment",
+  other: "Other",
+} as const;
+
+export const CHANGE_STATUS_LABELS = {
+  proposed: "Proposed",
+  accepted: "Accepted",
+  in_progress: "In progress",
+  done: "Done",
+  rejected: "Rejected",
+} as const;

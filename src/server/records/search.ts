@@ -1,13 +1,13 @@
-// Global search (spec §9): clients, websites and projects by name, code or
+// Global search (spec §9): clients, websites, projects and tasks by name, code or
 // domain. Substring matches rank first, then trigram similarity (pg_trgm),
-// which also catches small typos. Tasks join in Phase 2.
+// which also catches small typos. Archived records (and tasks of archived projects) are left out.
 import { and, desc, eq, ilike, isNull, or, sql, type AnyColumn } from "drizzle-orm";
 import type { DbOrTx } from "../db/client";
-import { clients, projects, websites } from "../db/schema";
+import { clients, projects, tasks, websites } from "../db/schema";
 import { escapeLike } from "./fields";
 
 export type SearchHit = {
-  type: "client" | "website" | "project";
+  type: "client" | "website" | "project" | "task";
   id: string;
   title: string;
   detail: string | null;
@@ -25,7 +25,7 @@ export async function searchRecords(db: DbOrTx, rawQuery: string): Promise<Searc
   const score = (column: AnyColumn) =>
     sql<number>`(CASE WHEN ${column} ILIKE ${like} THEN 1 ELSE 0 END) + similarity(${column}, ${q})`;
 
-  const [clientRows, websiteRows, projectRows] = await Promise.all([
+  const [clientRows, websiteRows, projectRows, taskRows] = await Promise.all([
     db
       .select({ id: clients.id, name: clients.name, slug: clients.slug })
       .from(clients)
@@ -53,6 +53,15 @@ export async function searchRecords(db: DbOrTx, rawQuery: string): Promise<Searc
       )
       .orderBy(desc(score(projects.name)))
       .limit(PER_TYPE),
+    db
+      .select({ id: tasks.id, title: tasks.title, status: tasks.status, projectId: projects.id, projectName: projects.name })
+      .from(tasks)
+      .innerJoin(projects, eq(projects.id, tasks.projectId))
+      .where(
+        and(isNull(tasks.archivedAt), isNull(projects.archivedAt), or(ilike(tasks.title, like), similar(tasks.title))),
+      )
+      .orderBy(desc(score(tasks.title)))
+      .limit(PER_TYPE),
   ]);
 
   return [
@@ -70,6 +79,13 @@ export async function searchRecords(db: DbOrTx, rawQuery: string): Promise<Searc
       title: r.name,
       detail: [r.code, r.clientName].filter(Boolean).join(" · "),
       href: `/projects/${r.id}`,
+    })),
+    ...taskRows.map((r) => ({
+      type: "task" as const,
+      id: r.id,
+      title: r.title,
+      detail: r.projectName,
+      href: `/projects/${r.projectId}/tasks/${r.id}`,
     })),
   ];
 }
