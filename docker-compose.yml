@@ -1,0 +1,27 @@
+# Local Postgres for SiteSync. Bound to 127.0.0.1 only.
+# Init scripts in docker/initdb run once, on an empty volume.
+services:
+  db:
+    image: postgres:18.6-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-sitesync}
+      SITESYNC_OWNER_PASSWORD: ${SITESYNC_OWNER_PASSWORD:?set SITESYNC_OWNER_PASSWORD in .env}
+      SITESYNC_APP_PASSWORD: ${SITESYNC_APP_PASSWORD:?set SITESYNC_APP_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      # Postgres 18 images keep data under /var/lib/postgresql/<major>/docker.
+      - sitesync_pgdata:/var/lib/postgresql
+      - ./docker/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  sitesync_pgdata:
