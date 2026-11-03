@@ -1,5 +1,17 @@
 // Deployment state pills and the deploy history table (website detail, project tab 13).
-import { Ban, CircleCheck, CircleDashed, CircleDot, CircleX, History, Rocket, type LucideIcon } from "lucide-react";
+import {
+  Ban,
+  CircleCheck,
+  CircleDashed,
+  CircleDot,
+  CircleX,
+  Clock,
+  History,
+  Lock,
+  Rocket,
+  TriangleAlert,
+  type LucideIcon,
+} from "lucide-react";
 import { StatusPill } from "@/components/status";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { formatDateTime } from "@/lib/format";
@@ -17,6 +29,52 @@ const STATE: Record<string, [LucideIcon, "neutral" | "info" | "success" | "warni
 
 export function DeploymentState({ state }: { state: string }) {
   const [icon, tone, label] = STATE[state] ?? STATE.unknown!;
+  return <StatusPill icon={icon} label={label} tone={tone} />;
+}
+
+/** How to stop the provider auto-deploying to production (spec §1.1, decision 0010). */
+export const LOCK_HOW: Record<string, string> = {
+  cloudflare:
+    "Cloudflare Pages: Settings → Builds & deployments → Configure Production deployments, untick “Enable automatic production branch deployments”, and save.",
+  netlify: "Netlify: Deploys → “Lock to stop auto publishing” on the published deploy.",
+  vercel: "Vercel: Settings → Environments → Production → turn off “Auto-assign Custom Production Domains” (deploys are then staged until promoted).",
+};
+
+export function AutoPublishPill({ value }: { value: string }) {
+  if (value === "locked") return <StatusPill icon={Lock} label="Auto-publish locked" tone="success" />;
+  if (value === "disabled") return <StatusPill icon={Lock} label="Auto-deploy off" tone="success" />;
+  if (value === "enabled") return <StatusPill icon={TriangleAlert} label="Auto-publish on" tone="warning" />;
+  return <StatusPill icon={TriangleAlert} label="Auto-publish unknown" tone="warning" />;
+}
+
+/** The §1.1 caveat, shown wherever auto-publishing isn't confirmed off. */
+export function AutoPublishCaveat({ provider, value }: { provider: string; value: string }) {
+  if (value === "locked" || value === "disabled") return null;
+  return (
+    <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+      <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+      <p>
+        <strong>SiteSync can&apos;t stop this host from auto-deploying to production on push or merge.</strong> With
+        auto-publishing {value === "enabled" ? "on" : "possibly on"}, code merged to the production branch can go live
+        without SiteSync&apos;s approval. {LOCK_HOW[provider] ?? ""}
+      </p>
+    </div>
+  );
+}
+
+const DISPATCH: Record<string, [LucideIcon, "neutral" | "info" | "success" | "warning" | "danger" | "muted", string]> = {
+  pending: [Clock, "info", "Sending"],
+  dispatched: [Clock, "info", "Sent, waiting for the host"],
+  confirming: [Clock, "info", "Waiting for the host"],
+  confirmed_success: [Rocket, "success", "Confirmed live"],
+  confirmed_failure: [CircleX, "danger", "Failed"],
+  dispatch_failed: [CircleX, "danger", "Not sent"],
+  timed_out: [TriangleAlert, "warning", "Not confirmed (timed out)"],
+};
+
+/** A SiteSync release's dispatch state (§5.3). */
+export function DispatchState({ state }: { state: string }) {
+  const [icon, tone, label] = DISPATCH[state] ?? [CircleDashed, "warning" as const, state];
   return <StatusPill icon={icon} label={label} tone={tone} />;
 }
 

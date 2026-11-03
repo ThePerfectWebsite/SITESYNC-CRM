@@ -176,7 +176,68 @@ export function createHttpClient(options: HttpClientOptions) {
     return { data: parsed.data, response };
   }
 
-  return { request, getJson };
+  /**
+   * A write (POST/PUT). Writes aren't idempotent on these providers, so the only
+   * retry is a rate-limit refusal (the provider didn't act on it). A network error
+   * or 5xx may or may not have been acted on: it's thrown as is, never retried,
+   * and the caller confirms from the provider's own state afterwards.
+   */
+  async function sendJson<S extends z.ZodType>(
+    method: "POST" | "PUT",
+    path: string,
+    schema: S,
+    body?: { json?: unknown; form?: Record<string, string> },
+  ): Promise<{ data: z.output<S>; response: Response }> {
+    const url = new URL(path, options.baseUrl);
+    const headers: Record<string, string> = { ...options.headers };
+    let payload: BodyInit | undefined;
+    if (body?.form) {
+      const form = new FormData();
+      for (const [key, value] of Object.entries(body.form)) form.set(key, value);
+      payload = form;
+    } else if (body?.json !== undefined) {
+      headers["Content-Type"] = "application/json";
+      payload = JSON.stringify(body.json);
+    }
+    for (let attempt = 1; ; attempt++) {
+      let response: Response;
+      try {
+        response = await providerFetch(
+          url.toString(),
+          { method, headers, body: payload },
+          { fetchImpl: options.fetchImpl, followRedirects: false },
+        );
+      } catch (error) {
+        if (error instanceof BlockedRequestError) throw new ProviderError("blocked", error.message);
+        throw new ProviderError("network", error instanceof Error ? error.message : "network error");
+      }
+      const rateLimit = readRateLimit(response.headers);
+      if (rateLimit.remaining !== null || rateLimit.resetAt !== null) options.onRateLimit?.(rateLimit);
+      if (response.ok) {
+        const text = await response.text();
+        let parsedBody: unknown = {};
+        if (text.trim()) {
+          try {
+            parsedBody = JSON.parse(text);
+          } catch {
+            throw new ProviderError("invalid_response", `${path}: response was not JSON`, response.status);
+          }
+        }
+        const parsed = schema.safeParse(parsedBody);
+        if (!parsed.success) throw new ProviderError("invalid_response", `${path}: unexpected response shape`, response.status);
+        return { data: parsed.data, response };
+      }
+      const message = await errorMessage(response);
+      const { kind, retryAt } = classifyFailure(response.status, response.headers, message, now());
+      const error = new ProviderError(kind, `${response.status} ${message}`, response.status, retryAt);
+      if (kind !== "rate_limited" || attempt >= maxAttempts) throw error;
+      const waitMs = retryAt ? Math.max(0, retryAt.getTime() - now()) + jitter() : backoff(attempt);
+      if (waitMs > 30_000) throw error; // don't hold an approval's dispatch for long
+      await sleep(waitMs);
+    }
+  }
+
+  return { request, getJson, sendJson };
 }
 
 /** True if a Link header says there are more pages. */

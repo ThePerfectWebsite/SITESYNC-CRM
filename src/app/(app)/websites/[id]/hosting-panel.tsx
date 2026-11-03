@@ -1,29 +1,14 @@
 import Link from "next/link";
-import { Lock, Server, TriangleAlert } from "lucide-react";
-import { DeploymentState, ExternalUrl, providerName } from "@/components/deployments";
+import { Server } from "lucide-react";
+import { AutoPublishCaveat, AutoPublishPill, DeploymentState, ExternalUrl, providerName } from "@/components/deployments";
 import { ActionButton } from "@/components/forms/action-button";
-import { IntegrationHealth, StatusPill } from "@/components/status";
+import { IntegrationHealth } from "@/components/status";
 import { Card, CardContent } from "@/components/ui/card";
 import { formatDateTime } from "@/lib/format";
 import type { listHostingLinks } from "@/server/integrations/hosting-sync";
 import { archiveHostingLinkAction, refreshHostingLinkAction } from "../../integrations/actions";
 
 type Row = Awaited<ReturnType<typeof listHostingLinks>>[number];
-
-/** How to stop the provider auto-deploying to production (spec §1.1, decision 0010). */
-const LOCK_HOW: Record<string, string> = {
-  cloudflare:
-    "Cloudflare Pages: Settings → Builds & deployments → Configure Production deployments, untick “Enable automatic production branch deployments”, and save.",
-  netlify: "Netlify: Deploys → “Lock to stop auto publishing” on the published deploy.",
-  vercel: "Vercel: Settings → Environments → Production → turn off “Auto-assign Custom Production Domains” (deploys are then staged until promoted).",
-};
-
-function AutoPublish({ value }: { value: string }) {
-  if (value === "locked") return <StatusPill icon={Lock} label="Auto-publish locked" tone="success" />;
-  if (value === "disabled") return <StatusPill icon={Lock} label="Auto-deploy off" tone="success" />;
-  if (value === "enabled") return <StatusPill icon={TriangleAlert} label="Auto-publish on" tone="warning" />;
-  return <StatusPill icon={TriangleAlert} label="Auto-publish unknown" tone="warning" />;
-}
 
 export function HostingPanel({
   websiteId,
@@ -53,7 +38,7 @@ export function HostingPanel({
               ) : null}
             </h3>
             <span className="text-sm capitalize text-muted-foreground">{link.environment}</span>
-            {manual ? <span className="text-xs text-muted-foreground">Manual record (not synced)</span> : <AutoPublish value={link.autoPublish} />}
+            {manual ? <span className="text-xs text-muted-foreground">Manual record (not synced)</span> : <AutoPublishPill value={link.autoPublish} />}
           </div>
           {readOnly ? null : (
             <div className="flex flex-wrap gap-2">
@@ -103,16 +88,7 @@ export function HostingPanel({
           </div>
         ) : null}
 
-        {showCaveat ? (
-          <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
-            <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-            <p>
-              <strong>SiteSync can&apos;t stop this host from auto-deploying to production on push or merge.</strong> With
-              auto-publishing {link.autoPublish === "enabled" ? "on" : "possibly on"}, code merged to the production branch
-              can go live without SiteSync&apos;s approval. {LOCK_HOW[link.provider] ?? ""}
-            </p>
-          </div>
-        ) : null}
+        {showCaveat ? <AutoPublishCaveat provider={link.provider} value={link.autoPublish} /> : null}
       </CardContent>
     </Card>
   );

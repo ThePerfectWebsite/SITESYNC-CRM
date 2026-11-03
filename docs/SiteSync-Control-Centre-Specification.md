@@ -1,6 +1,6 @@
 # SiteSync Control Centre — Specification
 
-Status: **v1 — approved by operator** (Phase S, 2026-11-03). Amended in Phase 3b: Cloudflare Pages added as a hosting provider (decision 0010).
+Status: **v1 — approved by operator** (Phase S, 2026-11-03). Amended in Phase 3b: Cloudflare Pages added as a hosting provider (decision 0010). Amended in Phase 4: release mechanism verified, Cloudflare uses `build_from_ref`, two approval columns added (decision 0011).
 
 This document is the source of truth for product behaviour and schema. The build prompt remains the source of truth for process, safety rules and stack. Where this spec and the prompt conflict on safety, the stricter rule wins.
 
@@ -492,6 +492,8 @@ Deployments are never deleted or archived; they are history.
 
 Unique partial `(hosting_link_id) WHERE status = 'awaiting_confirmation'` — at most one live approval per production target. A trigger forbids any transition out of `consumed`/`expired`/`revoked`/`refused` (terminal states).
 
+**Phase 4 additions (decision 0011):** `target_deployment_id uuid NULL` (FK `deployments`, same hosting link; required with `target_provider_deployment_id` for promote/rollback) and `production_branch text NULL` (required for `build_from_ref`). The trigger also forbids changing what was approved. No DELETE grant.
+
 ### 3.24 `webhook_inbox`
 
 | Column | Type | Constraints |
@@ -693,7 +695,9 @@ Route: `POST /api/webhooks/github/<integration_id>`. Steps: check `webhook_enabl
 
 ## 8. Production deployment gate
 
-### 8.1 Mechanism (to be verified in Phase 4 decision record)
+### 8.1 Mechanism (verified in decision 0011)
+
+> **Phase 4 amendment (decision 0011).** Verified on 2026-11-03. Vercel `POST /v10/projects/{id}/promote/{deploymentId}`; Netlify `restore` as below; **Cloudflare Pages has no promote and uses `build_from_ref`** (`POST …/pages/projects/{name}/deployments` with `branch`, which builds HEAD), with the built commit also checked at confirmation. Rollback: Cloudflare `…/deployments/{id}/rollback`, Netlify `restore`, Vercel `POST /v1/projects/{id}/rollback/{deploymentId}`. The providers take no idempotency key; single dispatch is guaranteed by SiteSync (approval lock, unique `approval_id`, dispatch only from `pending`, writes never retried after they may have arrived).
 
 - **Vercel:** promote an existing READY deployment to production by deployment ID (Vercel "promote" API). Binds approval to exact build output.
 - **Netlify:** publish/restore a specific deploy by deploy ID (`POST /sites/{site_id}/deploys/{deploy_id}/restore`), with auto-publishing locked so later builds don't replace it.

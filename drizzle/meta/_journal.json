@@ -78,6 +78,20 @@
       "when": 1793728631615,
       "tag": "0010_hosting_sync_triggers_grants",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1793742426595,
+      "tag": "0011_deployment_gate",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1793742446550,
+      "tag": "0012_deployment_gate_triggers_grants",
+      "breakpoints": true
     }
   ]
 }

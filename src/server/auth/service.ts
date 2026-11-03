@@ -231,3 +231,40 @@ export async function logout(
     });
   });
 }
+
+export type ReauthResult = { ok: true } | { ok: false; reason: "invalid" } | { ok: false; reason: "throttled"; retryAfterSeconds: number };
+
+/**
+ * Re-enters the signed-in operator's password (spec §8.3 final confirmation).
+ * Shares login's throttle: failures count toward it, and are audited.
+ */
+export async function verifyOperatorPassword(
+  db: Db,
+  userId: string,
+  password: string,
+  meta: RequestMeta & { purpose: string; subjectType?: string; subjectId?: string } = { purpose: "reauth" },
+): Promise<ReauthResult> {
+  const [user] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+  if (!user || user.disabledAt) return { ok: false, reason: "invalid" };
+  const emailHash = hashEmail(user.email);
+  const throttle = await checkLoginThrottle(db, emailHash);
+  if (!throttle.allowed) return { ok: false, reason: "throttled", retryAfterSeconds: throttle.retryAfterSeconds };
+  const ok =
+    password.length > 0 &&
+    password.length <= PASSWORD_MAX &&
+    (await verifyPassword(password, { hash: user.passwordHash, salt: user.passwordSalt, params: user.passwordParams }));
+  await recordLoginAttempt(db, emailHash, ok, meta.ip ?? null);
+  if (!ok) {
+    await writeAudit(db, {
+      actor: { type: "user", userId },
+      action: "auth.reauth_failed",
+      subjectType: meta.subjectType ?? "user",
+      subjectId: meta.subjectId ?? userId,
+      summary: `Wrong password at ${meta.purpose}`,
+      metadata: { purpose: meta.purpose, ip: meta.ip ?? null },
+      requestId: meta.requestId,
+    });
+    return { ok: false, reason: "invalid" };
+  }
+  return { ok: true };
+}

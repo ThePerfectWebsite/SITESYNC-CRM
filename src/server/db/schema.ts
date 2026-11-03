@@ -972,8 +972,8 @@ export const hostingLinks = pgTable(
   ],
 );
 
-// §3.22 — history: never deleted or archived. approval_id gets its FK in Phase 4
-// (production_approvals); provider_updated_at is an addition for order-tolerant
+// §3.22 — history: never deleted or archived. approval_id references
+// production_approvals (Phase 4); provider_updated_at is an addition for order-tolerant
 // upserts (§5.2, decision 0010).
 export const deployments = pgTable(
   "deployments",
@@ -1005,7 +1005,7 @@ export const deployments = pgTable(
     confirmationSource: text("confirmation_source").$type<"provider">(),
     errorSummary: text("error_summary"),
     idempotencyKey: uuid("idempotency_key"),
-    approvalId: uuid("approval_id"),
+    approvalId: uuid("approval_id").references((): AnyPgColumn => productionApprovals.id, { onDelete: "restrict" }),
     targetDeploymentId: uuid("target_deployment_id").references((): AnyPgColumn => deployments.id, {
       onDelete: "restrict",
     }),
@@ -1056,5 +1056,94 @@ export const deployments = pgTable(
     index("deployments_project_created_idx").on(t.projectId, t.createdAt.desc()),
     index("deployments_commit_idx").on(t.commitSha),
     index("deployments_in_flight_idx").on(t.state).where(sql`${t.state} IN ('queued','building')`),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// Phase 4 — approval-gated deployment (spec §3.23, §5.4, §8; decision 0011)
+
+export const APPROVAL_ACTIONS = ["promote", "rollback", "build_from_ref"] as const;
+export const APPROVAL_STATUSES = ["awaiting_confirmation", "consumed", "expired", "revoked", "refused"] as const;
+export type ApprovalAction = (typeof APPROVAL_ACTIONS)[number];
+export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
+
+// §3.23 — terminal states are enforced by a trigger in the hand-written migration.
+export const productionApprovals = pgTable(
+  "production_approvals",
+  {
+    id: id(),
+    projectId: uuid("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "restrict" }),
+    websiteId: uuid("website_id")
+      .notNull()
+      .references(() => websites.id, { onDelete: "restrict" }),
+    hostingLinkId: uuid("hosting_link_id")
+      .notNull()
+      .references(() => hostingLinks.id, { onDelete: "restrict" }),
+    provider: text("provider").$type<HostingProvider>().notNull(),
+    providerProjectId: text("provider_project_id").notNull(),
+    environment: text("environment").$type<"production">().notNull(),
+    action: text("action").$type<ApprovalAction>().notNull(),
+    /** Addition to §3.23: SiteSync's row for the target deploy (promote/rollback). */
+    targetDeploymentId: uuid("target_deployment_id").references((): AnyPgColumn => deployments.id, {
+      onDelete: "restrict",
+    }),
+    targetProviderDeploymentId: text("target_provider_deployment_id"),
+    targetCommitSha: text("target_commit_sha").notNull(),
+    /** Addition to §3.23: the branch a build_from_ref builds. */
+    productionBranch: text("production_branch"),
+    expectedCurrentProviderDeploymentId: text("expected_current_provider_deployment_id"),
+    preflightSnapshot: jsonb("preflight_snapshot").notNull(),
+    preflightHash: bytea("preflight_hash").notNull(),
+    reason: text("reason").notNull(),
+    approvedBy: uuid("approved_by")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    approvedAt: timestamp("approved_at", { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: tsNull("expires_at").notNull(),
+    status: text("status").$type<ApprovalStatus>().notNull().default("awaiting_confirmation"),
+    confirmedAt: tsNull("confirmed_at"),
+    consumedAt: tsNull("consumed_at"),
+    refusalReason: text("refusal_reason"),
+    revokedAt: tsNull("revoked_at"),
+    revokedBy: uuid("revoked_by").references(() => users.id, { onDelete: "restrict" }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    check("production_approvals_provider_check", sql`${t.provider} IN ('netlify','vercel','cloudflare')`),
+    check("production_approvals_provider_project_id_length", sql`length(${t.providerProjectId}) BETWEEN 1 AND 200`),
+    check("production_approvals_environment_check", sql`${t.environment} = 'production'`),
+    check("production_approvals_action_check", sql`${t.action} IN (${inList(APPROVAL_ACTIONS)})`),
+    check(
+      "production_approvals_target_required",
+      sql`${t.action} = 'build_from_ref' OR (${t.targetProviderDeploymentId} IS NOT NULL AND ${t.targetDeploymentId} IS NOT NULL)`,
+    ),
+    check(
+      "production_approvals_branch_required",
+      sql`${t.action} <> 'build_from_ref' OR ${t.productionBranch} IS NOT NULL`,
+    ),
+    check("production_approvals_target_id_length", sql`length(${t.targetProviderDeploymentId}) BETWEEN 1 AND 200`),
+    check("production_approvals_target_commit_format", sql`${t.targetCommitSha} ~ '^[0-9a-f]{40}$'`),
+    check("production_approvals_branch_length", sql`length(${t.productionBranch}) BETWEEN 1 AND 255`),
+    check(
+      "production_approvals_expected_id_length",
+      sql`length(${t.expectedCurrentProviderDeploymentId}) BETWEEN 1 AND 200`,
+    ),
+    check("production_approvals_snapshot_size", sql`octet_length(${t.preflightSnapshot}::text) <= 65536`),
+    check("production_approvals_hash_length", sql`octet_length(${t.preflightHash}) = 32`),
+    check("production_approvals_reason_length", sql`length(${t.reason}) BETWEEN 3 AND 2000`),
+    check("production_approvals_expiry", sql`${t.expiresAt} = ${t.approvedAt} + interval '30 minutes'`),
+    check("production_approvals_status_check", sql`${t.status} IN (${inList(APPROVAL_STATUSES)})`),
+    check("production_approvals_consumed", sql`(${t.status} = 'consumed') = (${t.consumedAt} IS NOT NULL)`),
+    check("production_approvals_revoked", sql`(${t.status} = 'revoked') = (${t.revokedAt} IS NOT NULL)`),
+    check("production_approvals_refusal_length", sql`length(${t.refusalReason}) <= 1000`),
+    // At most one live approval per production target.
+    uniqueIndex("production_approvals_one_awaiting_key")
+      .on(t.hostingLinkId)
+      .where(sql`${t.status} = 'awaiting_confirmation'`),
+    index("production_approvals_project_idx").on(t.projectId, t.approvedAt.desc()),
+    index("production_approvals_status_idx").on(t.status),
   ],
 );

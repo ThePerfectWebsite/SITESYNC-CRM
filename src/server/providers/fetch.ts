@@ -37,7 +37,7 @@ export function assertAllowedUrl(url: string): URL {
 export async function providerFetch(
   url: string,
   init: RequestInit = {},
-  options: { fetchImpl?: FetchImpl; timeoutMs?: number } = {},
+  options: { fetchImpl?: FetchImpl; timeoutMs?: number; followRedirects?: boolean } = {},
 ): Promise<Response> {
   const fetchImpl = options.fetchImpl ?? ((input, requestInit) => fetch(input, requestInit));
   let current = assertAllowedUrl(url);
@@ -48,6 +48,8 @@ export async function providerFetch(
       signal: AbortSignal.timeout(options.timeoutMs ?? TIMEOUT_MS),
     });
     if (response.status < 300 || response.status >= 400 || response.status === 304) return response;
+    // Writes are never replayed against a redirect target.
+    if (options.followRedirects === false) throw new BlockedRequestError("redirect on a write request");
     const location = response.headers.get("location");
     if (!location) return response;
     const next = assertAllowedUrl(new URL(location, current).toString());

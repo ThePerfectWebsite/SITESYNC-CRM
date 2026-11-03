@@ -4,7 +4,7 @@
 // world with no hosting at all.
 import { and, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 import type { DbOrTx } from "../db/client";
-import { deployments, hostingLinks, integrations } from "../db/schema";
+import { deployments, hostingLinks, integrations, productionApprovals } from "../db/schema";
 import type { DeploymentFact } from "./machine";
 
 export interface DeploymentFacts {
@@ -42,8 +42,13 @@ export const databaseDeploymentFacts: DeploymentFacts = {
     return Boolean(row);
   },
 
-  // Approvals arrive in Phase 4; until then, only SiteSync dispatches can be in flight.
   async hasInFlightDeploymentWork(db, projectId) {
+    const [approval] = await db
+      .select({ id: productionApprovals.id })
+      .from(productionApprovals)
+      .where(and(eq(productionApprovals.projectId, projectId), eq(productionApprovals.status, "awaiting_confirmation")))
+      .limit(1);
+    if (approval) return true;
     const [row] = await db
       .select({ id: deployments.id })
       .from(deployments)

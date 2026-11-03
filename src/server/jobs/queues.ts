@@ -16,6 +16,8 @@ export const QUEUES = {
   hostingSync: "hosting-sync",
   /** Cron: enqueue syncs for hosting links due a poll. */
   hostingPoll: "hosting-poll",
+  /** Confirm one SiteSync release with the provider (spec §5.3); re-queues itself with backoff. */
+  deployConfirm: "deploy-confirm",
   /** Process one webhook delivery. */
   webhookProcess: "webhook-process",
   /** Cron: re-run failed deliveries whose backoff has elapsed. */
@@ -29,6 +31,7 @@ export const QUEUE_OPTIONS: Record<string, Omit<Queue, "name">> = {
   [QUEUES.githubPoll]: { policy: "singleton", retryLimit: 0, expireInSeconds: 5 * 60 },
   [QUEUES.hostingSync]: { policy: "stately", retryLimit: 2, retryDelay: 60, retryBackoff: true, expireInSeconds: 15 * 60 },
   [QUEUES.hostingPoll]: { policy: "singleton", retryLimit: 0, expireInSeconds: 5 * 60 },
+  [QUEUES.deployConfirm]: { policy: "standard", retryLimit: 3, retryDelay: 30, expireInSeconds: 5 * 60 },
   [QUEUES.webhookProcess]: { policy: "standard", retryLimit: 0, expireInSeconds: 5 * 60 },
   [QUEUES.webhookRetry]: { policy: "singleton", retryLimit: 0, expireInSeconds: 5 * 60 },
   [QUEUES.maintenance]: { policy: "singleton", retryLimit: 1, expireInSeconds: 15 * 60 },

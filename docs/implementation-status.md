@@ -8,10 +8,96 @@
 | 2 — Work tracking | **Done** | 2026-11-03 |
 | 3a — GitHub read sync | **Done** | 2026-11-03 |
 | 3b — Hosting read sync | **Done** | 2026-11-03 |
-| 4 — Approval-gated deployment | Not started (ready) | |
-| 5 — Operations & polish | Not started | |
+| 4 — Approval-gated deployment | **Done** (not yet tried on a live host) | 2026-11-03 |
+| 5 — Operations & polish | Not started (ready) | |
 
-**Current phase for the next session:** Phase 4 — Approval-gated deployment.
+**Current phase for the next session:** Phase 5 — Operations & polish.
+
+---
+
+## Handoff — Phase 4 (2026-11-03)
+
+### 1. Phase completed and key areas changed
+Phase 4 — Approval-gated deployment. The operator chose "whichever is best, and free" for Cloudflare. Decision 0011 records the mechanism, which is spec §8.1's verification record. Spec amended (§3.23, §8.1).
+- **Migrations:**
+  - `0011_deployment_gate` (generated):
+    - `production_approvals` (§3.23), plus `target_deployment_id` and `production_branch`;
+    - one awaiting approval per host; the 30-minute expiry check;
+    - the `deployments.approval_id` FK.
+  - `0012_deployment_gate_triggers_grants` (hand-written):
+    - same-website and same-link composite FKs;
+    - a trigger that makes every decided state terminal and freezes what was approved;
+    - `updated_at`;
+    - `SELECT, INSERT, UPDATE` only.
+- **Adapters:**
+  - `getDeployment`, `promote`, `rollback` and `buildFromRef` for all three hosts, with `HOSTING_CAPABILITIES`: Cloudflare builds the branch; Netlify and Vercel promote.
+  - `http.ts` `sendJson`: writes are never retried after they may have reached the provider (only on 429), and never follow redirects.
+- **Services (`src/server/deploy/`):**
+  - `preflight.ts`: everything the screen shows, the canonical snapshot and SHA-256 hash, problems, the 5-minute freshness rule, the release stage rule, and release options.
+  - `approvals.ts`:
+    - approve (hash re-check, readiness, unique awaiting), revoke, the expiry sweeper;
+    - the executor (§8.4): lock, expiry, live re-check of host/target/commit/current deploy, GitHub branch head for builds, readiness, consume plus a pending deployment, refusals terminal and audited;
+    - a single dispatch under the per-link lock;
+    - `confirmAndExecute` (password through the login throttle, audited);
+    - queries.
+  - `confirm.ts`: `judgeRelease` (pure), `evaluateRelease`, `checkRelease`, the 20-minute timeout, late confirmations, stuck-pending detection, `go_live` in a savepoint, website → live.
+  - `auth/service.ts`: `verifyOperatorPassword`.
+  - `stages/service.ts`: `goLiveWithinTransaction`.
+  - Deployment facts count awaiting approvals as in-flight work.
+  - Hosting sync takes the per-link advisory lock, and keeps a release record published while its target is live.
+- **Jobs:**
+  - `deploy-confirm` queue (5 s → 60 s backoff, re-queues itself), `enqueueDeployConfirm` with an inline fallback;
+  - hosting sync settles releases on the link; the hosting poll expires lapsed approvals.
+- **Screens:**
+  - preflight (15) `/projects/[id]/deploy/preflight?action=…&target=…`: target, live vs proposed, compare link, checks, open PRs, readiness/waivers, freshness with **Refresh from provider**, problems, Approve with a reason.
+  - final confirmation (16) `/approvals/[id]/confirm`: summary, countdown, password, revoke, and the decided-state view.
+  - overview **Release** section: options per host, latest release state, **Re-check now**, recovery text, rollback list, waiting-approval notice.
+  - dashboard: approvals waiting and release alerts.
+  - The auto-publish pill and caveat are now shared components.
+- **Docs:**
+  - decision 0011;
+  - `docs/hosting.md` "Releasing", now with the Cloudflare **Pages Edit** permission;
+  - README "Releases" and the updated known-limitation note;
+  - spec amendments;
+  - `.env.example`.
+
+### 2. Commands run and actual results
+- `npm run lint` → clean. `npm run typecheck` → passes.
+- `npm run db:migrate` and `-- --test` → 13/13 (dev DB too).
+- `npm test` → **18 files, 335 tests passed**. New in Phase 4:
+  - `deploy` unit tests (9): canonical hash, the stage rule, backoff, `judgeRelease` cases, provider writes (no retry on 5xx, 429 retried, no redirects; Vercel/Cloudflare paths, team ID and form field; unsupported actions).
+  - `deploy` integration tests (21), all of spec §8.6 plus the plan's extras, against stateful fake Netlify, Cloudflare and GitHub:
+    - no approval; expired (and the sweeper); consumed replay; target mismatch (commit changed, host unlinked);
+    - branch moved (`build_from_ref`); live changed since approval;
+    - concurrent double-submit → exactly one POST; wrong password → no calls, approval unchanged, audited;
+    - unwaived blocker at execution; preview deploys never promotable;
+    - hash mismatch on approve; stale data (> 5 min) disables approve; one awaiting approval per host; manual host / early stage refused;
+    - promote end to end (Live, website live, record stays published after re-sync);
+    - Cloudflare build end to end (no duplicate row); built-the-wrong-commit → failure;
+    - rollback through the gate; dispatch error → `dispatch_failed`, never retried;
+    - late confirmation after the timeout; the terminal and immutability trigger; no DELETE grant.
+- `npm run test:e2e` → **32 passed**, including 2 new:
+  - a manual host can't be released (the Release section and the preflight explain why; Approve unavailable);
+  - the confirmation screen: a wrong password leaves the approval waiting, and revoking ends it.
+
+  `github.spec` now opens the "Add an integration" form itself, because an earlier spec may already have added an integration.
+- Not done this phase: a visual screenshot pass of the new screens (E2E covers their rendering and flow).
+
+### 3. Setup steps and env var names
+- `npm run db:migrate` applies `0011`/`0012` and creates the `deploy-confirm` queue (done on this machine).
+- To release on Cloudflare: the token in `CLOUDFLARE_API_TOKEN` (or your name) needs **Account → Cloudflare Pages → Edit**. The website also needs its GitHub repository linked, because SiteSync checks the branch head before building.
+
+### 4. Credentials/config the operator still needs to provide
+None to run. For a live release test: a Cloudflare token with Pages Edit, a Pages project with automatic production deploys off, and its GitHub repository linked in SiteSync.
+
+### 5. Known limitations / unmet criteria
+- **No live release yet** on any host. Decision 0011 lists what to confirm: Cloudflare's create response and `canonical_deployment` moving; rollback limits; Netlify's lock surviving `restore`; Vercel's `targets.production` after promote.
+- Cloudflare builds the branch HEAD: if someone pushes in the seconds between SiteSync's check and Cloudflare starting the build, the wrong commit is built. SiteSync detects it and doesn't mark Live, but the build is still live on Cloudflare until you roll back.
+- Rollbacks need a clear readiness check like any release (spec §8.5). In an emergency, waive blockers with a reason.
+- With the job runner off (`SITESYNC_JOBS=off`), a release is checked once at dispatch. After that, the hosting poll or **Re-check now** settles it.
+
+### 6. Next phase and decisions needed first
+Next: **Phase 5 — Operations & polish** (backup/restore drill, integrations polish, activity screen 18, settings 19, accessibility pass, README against the acceptance criteria). No open decisions. A live release test (§4) is worth doing before or during Phase 5.
 
 ---
 

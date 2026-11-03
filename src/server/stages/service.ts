@@ -203,6 +203,18 @@ export async function systemGoLive(
   return db.transaction(async (tx) => goLiveInTransaction(tx, await lockProject(tx, input.projectId), input, options));
 }
 
+/**
+ * go_live inside the caller's transaction (Phase 4 confirmation, spec §8.5).
+ * Locks the project; the same checks as systemGoLive apply.
+ */
+export async function goLiveWithinTransaction(
+  tx: Tx,
+  input: { projectId: string; deploymentId: string; metadata?: Record<string, unknown> },
+  options: StageServiceOptions = {},
+): Promise<GoLiveResult> {
+  return goLiveInTransaction(tx, await lockProject(tx, input.projectId), input, options);
+}
+
 /** go_live inside an open transaction, with the project row already locked. */
 async function goLiveInTransaction(
   tx: Tx,

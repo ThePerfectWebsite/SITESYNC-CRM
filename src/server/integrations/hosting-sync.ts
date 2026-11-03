@@ -225,9 +225,19 @@ export async function applyCurrentDeployment(tx: Tx, link: LinkRow, currentProvi
         eq(deployments.hostingLinkId, link.id),
         eq(deployments.state, "published"),
         currentId ? ne(deployments.id, currentId) : undefined,
+        // A SiteSync promote/rollback record stays published while its target is live.
+        currentId ? sql`${deployments.targetDeploymentId} IS DISTINCT FROM ${currentId}` : undefined,
       ),
     );
   return currentId;
+}
+
+/**
+ * Serializes work on one hosting link's deployments: a sync's upserts and a
+ * dispatch recording the provider's new deploy ID (Phase 4) never interleave.
+ */
+export async function lockHostingLinkWork(tx: Tx, linkId: string): Promise<void> {
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`hosting_link:${linkId}`}, 0))`);
 }
 
 export type HostingSyncResult =
@@ -282,6 +292,7 @@ export async function syncHostingLink(
   // environment): Phase 4 promotes previews, and the overview shows the latest one.
   const items = page.items;
   const outcome = await db.transaction(async (tx) => {
+    await lockHostingLinkWork(tx, link.id);
     const written = await upsertDeployments(tx, link, items, now);
     const currentId =
       link.environment === "production" ? await applyCurrentDeployment(tx, link, project.currentProductionDeploymentId, now) : null;

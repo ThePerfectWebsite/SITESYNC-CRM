@@ -11,6 +11,8 @@ import { isUuid } from "@/lib/ids";
 import { cn } from "@/lib/utils";
 import { requireSession } from "@/server/auth/next";
 import { db } from "@/server/db";
+import { effectiveStatus, listApprovalsForProject, releasesForProject } from "@/server/deploy/approvals";
+import { releaseOptions, releaseStageProblem } from "@/server/deploy/preflight";
 import { liveAndLatestPreview } from "@/server/integrations/hosting-sync";
 import { getProject } from "@/server/records/projects";
 import { computeReadiness } from "@/server/records/readiness";
@@ -19,6 +21,7 @@ import { LIVE_EXPLANATION, NO_HOSTING_EXPLANATION, linearStages } from "@/server
 import { loadStageState } from "@/server/stages/service";
 import { confirmLiveAction, moveStageAction } from "../actions";
 import { ReadinessPanel } from "./readiness-panel";
+import { ReleasePanel } from "./release-panel";
 import { MoveStageForm, QuickMove, RestoreForm } from "./stage-controls";
 
 export const metadata: Metadata = { title: "Project overview" };
@@ -30,7 +33,7 @@ const STATUS: Record<string, { icon: LucideIcon; label: string; className: strin
   upcoming: { icon: Circle, label: "Upcoming", className: "text-muted-foreground" },
 };
 
-export default async function ProjectOverviewPage({ params }: PageProps<"/projects/[id]">) {
+export default async function ProjectOverviewPage({ params, searchParams }: PageProps<"/projects/[id]">) {
   await requireSession();
   const { id } = await params;
   if (!isUuid(id)) notFound();
@@ -46,10 +49,16 @@ export default async function ProjectOverviewPage({ params }: PageProps<"/projec
   const index = linear.findIndex((s) => s.id === current.id);
   const next = index >= 0 ? linear[index + 1] : undefined;
   const heldFrom = linear.find((s) => s.id === state.heldFromId);
-  const [hasHosting, deploys] = await Promise.all([
+  const [hasHosting, deploys, options, releases, approvals] = await Promise.all([
     databaseDeploymentFacts.hasIntegrationBackedProductionLink(database, project.websiteId),
     liveAndLatestPreview(database, project.websiteId),
+    releaseOptions(database, project.websiteId),
+    releasesForProject(database, id),
+    listApprovalsForProject(database, id, 5),
   ]);
+  const awaiting = approvals.find((a) => effectiveStatus(a.approval) === "awaiting_confirmation") ?? null;
+  const notice = (await searchParams).release;
+  const canRelease = !project.archivedAt && releaseStageProblem(state.stages) === null;
   // OQ-2: at Ready to Deploy, a live deploy the provider published on its own can be confirmed as the release.
   const offerLive =
     hasHosting &&
@@ -146,6 +155,18 @@ export default async function ProjectOverviewPage({ params }: PageProps<"/projec
 
         <Section title="Readiness">
           <ReadinessPanel projectId={id} websiteId={project.websiteId} readiness={readiness} readOnly={Boolean(project.archivedAt)} />
+        </Section>
+
+        <Section title="Release">
+          <ReleasePanel
+            projectId={id}
+            websiteId={project.websiteId}
+            canRelease={canRelease}
+            options={options}
+            releases={releases}
+            awaiting={awaiting}
+            notice={typeof notice === "string" ? notice : undefined}
+          />
         </Section>
 
         <Section title="Deployments">

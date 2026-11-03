@@ -32,11 +32,53 @@ export type HostingProjectInfo = {
   currentProductionDeploymentId: string | null;
 };
 
+/** What a dispatch started. `providerDeploymentId` is set when the provider created a new deploy. */
+export type DispatchResult = { providerDeploymentId: string | null };
+
+/** Which release actions a provider supports (decision 0011). */
+export type HostingCapabilities = {
+  /** Make an existing, built production deploy live, without rebuilding. */
+  promote: boolean;
+  /** Return production to an earlier production deploy. */
+  rollback: boolean;
+  /** Build the production branch head as a new production deploy. */
+  buildFromRef: boolean;
+};
+
+export const HOSTING_CAPABILITIES: Record<"netlify" | "vercel" | "cloudflare", HostingCapabilities> = {
+  netlify: { promote: true, rollback: true, buildFromRef: false },
+  vercel: { promote: true, rollback: true, buildFromRef: false },
+  cloudflare: { promote: false, rollback: true, buildFromRef: true },
+};
+
 export interface HostingAdapter {
   testConnection(): Promise<{ login: string }>;
   getProject(providerProjectId: string): Promise<HostingProjectInfo>;
   /** Most recent deployments first, at most `limit` (one page). */
   listDeployments(providerProjectId: string, options: { limit: number }): Promise<Page<NormalizedDeployment>>;
+  /** One deploy. Whether it counts as published depends on the last getProject() call. */
+  getDeployment(providerProjectId: string, providerDeploymentId: string): Promise<NormalizedDeployment>;
+  /**
+   * Phase 4 writes (spec §8.1, decision 0011). Each is sent once, and never
+   * retried once it may have reached the provider.
+   */
+  promote(providerProjectId: string, providerDeploymentId: string): Promise<DispatchResult>;
+  rollback(providerProjectId: string, providerDeploymentId: string): Promise<DispatchResult>;
+  buildFromRef(providerProjectId: string, branch: string): Promise<DispatchResult>;
+}
+
+/** Thrown by an adapter asked for an action its provider doesn't support. */
+export class UnsupportedActionError extends Error {
+  constructor(provider: string, action: string) {
+    super(`${provider} doesn't support ${action} in SiteSync.`);
+    this.name = "UnsupportedActionError";
+  }
+}
+
+function withQuery(path: string, query: Record<string, string | undefined>): string {
+  const entries = Object.entries(query).filter((entry): entry is [string, string] => entry[1] !== undefined);
+  const params = new URLSearchParams(entries).toString();
+  return params ? `${path}?${params}` : path;
 }
 
 export type HostingAdapterOptions = {
@@ -229,6 +271,28 @@ export function createNetlifyAdapter(options: HostingAdapterOptions): HostingAda
         truncated: hasNextPage(response.headers),
       };
     },
+
+    async getDeployment(providerProjectId, deployId) {
+      const { data } = await client.getJson(
+        `${sitePath(providerProjectId)}/deploys/${encodeURIComponent(deployId)}`,
+        netlifyDeploySchema,
+      );
+      const currentId = currentCache?.siteId === providerProjectId ? currentCache.currentId : null;
+      return normalizeNetlifyDeploy(data, currentId);
+    },
+
+    // Netlify publishes a specific deploy with "restore"; the same call rolls back.
+    async promote(providerProjectId, deployId) {
+      await client.sendJson("POST", `${sitePath(providerProjectId)}/deploys/${encodeURIComponent(deployId)}/restore`, z.unknown());
+      return { providerDeploymentId: null };
+    },
+    async rollback(providerProjectId, deployId) {
+      await client.sendJson("POST", `${sitePath(providerProjectId)}/deploys/${encodeURIComponent(deployId)}/restore`, z.unknown());
+      return { providerDeploymentId: null };
+    },
+    async buildFromRef() {
+      throw new UnsupportedActionError("Netlify", "building from a branch");
+    },
   };
 }
 
@@ -387,8 +451,70 @@ export function createVercelAdapter(options: HostingAdapterOptions): HostingAdap
         truncated: Boolean(data.pagination?.next),
       };
     },
+
+    async getDeployment(providerProjectId, deploymentId) {
+      const { data } = await client.getJson(
+        `/v13/deployments/${encodeURIComponent(deploymentId)}`,
+        vercelSingleDeploymentSchema,
+        team,
+      );
+      const currentId = currentCache?.projectId === providerProjectId ? currentCache.currentId : null;
+      return normalizeVercelDeployment(
+        {
+          uid: data.id,
+          url: data.url,
+          created: data.createdAt ?? data.created,
+          buildingAt: data.buildingAt,
+          ready: data.ready,
+          readyState: data.readyState,
+          readySubstate: data.readySubstate,
+          target: data.target,
+          errorMessage: data.errorMessage,
+          inspectorUrl: data.inspectorUrl,
+          meta: data.meta,
+        },
+        currentId,
+      );
+    },
+
+    // Points production at an existing deployment, without rebuilding it.
+    async promote(providerProjectId, deploymentId) {
+      await client.sendJson(
+        "POST",
+        withQuery(`/v10/projects/${encodeURIComponent(providerProjectId)}/promote/${encodeURIComponent(deploymentId)}`, team),
+        z.unknown(),
+      );
+      return { providerDeploymentId: null };
+    },
+    async rollback(providerProjectId, deploymentId) {
+      await client.sendJson(
+        "POST",
+        withQuery(`/v1/projects/${encodeURIComponent(providerProjectId)}/rollback/${encodeURIComponent(deploymentId)}`, team),
+        z.unknown(),
+      );
+      return { providerDeploymentId: null };
+    },
+    async buildFromRef() {
+      throw new UnsupportedActionError("Vercel", "building from a branch");
+    },
   };
 }
+
+/** `GET /v13/deployments/{id}` names the ID `id` (the list endpoint says `uid`). */
+const vercelSingleDeploymentSchema = z.object({
+  id: z.string(),
+  url: z.string().nullish(),
+  created: z.number().nullish(),
+  createdAt: z.number().nullish(),
+  buildingAt: z.number().nullish(),
+  ready: z.number().nullish(),
+  readyState: z.string(),
+  readySubstate: z.string().nullish(),
+  target: z.string().nullish(),
+  errorMessage: z.string().nullish(),
+  inspectorUrl: z.string().nullish(),
+  meta: z.record(z.string(), z.unknown()).nullish(),
+});
 
 // --- Cloudflare Pages ------------------------------------------------------------
 
@@ -559,6 +685,38 @@ export function createCloudflareAdapter(options: HostingAdapterOptions): Hosting
         items: data.result.slice(0, perPage).map((d) => normalizeCloudflareDeployment(d, currentId)),
         truncated: pages > 1,
       };
+    },
+
+    async getDeployment(name, deploymentId) {
+      const { data } = await client.getJson(
+        `${projectPath(name)}/deployments/${encodeURIComponent(deploymentId)}`,
+        envelope(cloudflareDeploymentSchema),
+      );
+      const currentId = currentCache?.project === name ? currentCache.currentId : null;
+      return normalizeCloudflareDeployment(data.result, currentId);
+    },
+
+    async promote() {
+      throw new UnsupportedActionError("Cloudflare Pages", "promoting a preview");
+    },
+
+    // Returns production to an earlier successful deployment.
+    async rollback(name, deploymentId) {
+      const { data } = await client.sendJson(
+        "POST",
+        `${projectPath(name)}/deployments/${encodeURIComponent(deploymentId)}/rollback`,
+        envelope(z.object({ id: z.string() })),
+      );
+      return { providerDeploymentId: data.result.id === deploymentId ? null : data.result.id };
+    },
+
+    // Builds the branch's HEAD as a production deploy. The commit can't be chosen,
+    // so the executor and the confirmation check it (decision 0011).
+    async buildFromRef(name, branch) {
+      const { data } = await client.sendJson("POST", `${projectPath(name)}/deployments`, envelope(z.object({ id: z.string() })), {
+        form: { branch },
+      });
+      return { providerDeploymentId: data.result.id };
     },
   };
 }

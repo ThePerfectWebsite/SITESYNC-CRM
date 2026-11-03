@@ -9,12 +9,14 @@ import { env } from "../env";
 import { describeError } from "../redact";
 import { processWebhookDelivery } from "../integrations/webhooks";
 import {
+  runDeployConfirmJob,
   runHostingPollJob,
   runHostingSyncJob,
   runMaintenanceJob,
   runPollJob,
   runSyncJob,
   runWebhookRetryJob,
+  type DeployConfirmJob,
   type HostingSyncJob,
   type SyncJob,
 } from "./handlers";
@@ -63,6 +65,9 @@ async function start(): Promise<void> {
   await boss.work(QUEUES.hostingPoll, async () => {
     await runHostingPollJob(database, (job) => enqueueHostingSync(job.linkId));
   });
+  await boss.work<DeployConfirmJob>(QUEUES.deployConfirm, async (jobs) => {
+    for (const job of jobs) await runDeployConfirmJob(database, job.data, (next, delay) => sendDeployConfirm(boss, next, delay));
+  });
   await boss.work<{ inboxId: string }>(QUEUES.webhookProcess, async (jobs) => {
     for (const job of jobs) await processWebhookDelivery(database, job.data.inboxId);
   });
@@ -101,4 +106,20 @@ export async function enqueueWebhook(inboxId: string): Promise<void> {
     return;
   }
   await processWebhookDelivery(db(), inboxId);
+}
+
+function sendDeployConfirm(boss: PgBoss, job: DeployConfirmJob, delaySeconds: number) {
+  return boss.send(QUEUES.deployConfirm, job, { startAfter: delaySeconds });
+}
+
+/**
+ * Starts confirming a release (§5.3). Without the job runner it checks once
+ * now; the hosting poll and "Re-check now" settle it later.
+ */
+export async function enqueueDeployConfirm(deploymentId: string): Promise<void> {
+  if (state.boss) {
+    await sendDeployConfirm(state.boss, { deploymentId, attempt: 1 }, 5);
+    return;
+  }
+  await runDeployConfirmJob(db(), { deploymentId, attempt: 1 }, async () => undefined);
 }

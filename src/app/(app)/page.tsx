@@ -3,13 +3,15 @@ import Link from "next/link";
 import { AlertTriangle, CalendarClock, LayoutDashboard } from "lucide-react";
 import { EmptyState, PageHeader, Section } from "@/components/page";
 import { ActivityFeed } from "@/components/records";
-import { DeploymentState } from "@/components/deployments";
+import { DeploymentState, DispatchState } from "@/components/deployments";
 import { IntegrationHealth, TaskPriority } from "@/components/status";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { formatDate, formatDateTime } from "@/lib/format";
 import { requireSession } from "@/server/auth/next";
 import { db } from "@/server/db";
+import { pendingApprovals, releaseAlerts } from "@/server/deploy/approvals";
+import { ACTION_LABELS } from "@/server/deploy/preflight";
 import { deploymentAlerts } from "@/server/integrations/hosting-sync";
 import { listIntegrations } from "@/server/integrations/service";
 import { listActivity } from "@/server/records/activity";
@@ -31,7 +33,7 @@ export default async function DashboardPage() {
   const database = db();
   const today = await appToday(database);
   const horizon = addDays(today, DEADLINE_DAYS);
-  const [counts, overdueProjects, lateTasks, dueTasks, upcomingLaunches, activity, alerts, integrationRows] = await Promise.all([
+  const [counts, overdueProjects, lateTasks, dueTasks, upcomingLaunches, activity, alerts, integrationRows, approvals, releases] = await Promise.all([
     projectCountsByStage(database),
     listProjects(database, { overdue: true, today }),
     overdueTasks(database, today),
@@ -42,6 +44,8 @@ export default async function DashboardPage() {
     listActivity(database, { excludeAuth: true }, 15),
     deploymentAlerts(database),
     listIntegrations(database),
+    pendingApprovals(database),
+    releaseAlerts(database),
   ]);
   const syncErrors = integrationRows.filter((i) => i.health === "error" || i.health === "degraded");
   const total = counts.reduce((sum, c) => sum + c.count, 0);
@@ -171,10 +175,45 @@ export default async function DashboardPage() {
             )}
           </Section>
 
-          {alerts.length || syncErrors.length ? (
+          {approvals.length ? (
+            <Section title="Approvals waiting">
+              <Card>
+                <CardContent>
+                  <ul className="grid gap-2" aria-label="Production approvals waiting for confirmation">
+                    {approvals.map((a) => (
+                      <li key={a.id} className="flex flex-wrap items-center gap-2 text-sm">
+                        <Link href={`/approvals/${a.id}/confirm`} className="font-medium text-primary hover:underline">
+                          {a.projectName}
+                        </Link>
+                        <span className="text-muted-foreground">
+                          {ACTION_LABELS[a.action]} · <code className="font-mono text-xs">{a.targetCommitSha.slice(0, 7)}</code> · expires{" "}
+                          {formatDateTime(a.expiresAt)}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </CardContent>
+              </Card>
+            </Section>
+          ) : null}
+
+          {alerts.length || syncErrors.length || releases.length ? (
             <Section title="Deployments and sync">
               <Card>
                 <CardContent className="grid gap-3">
+                  {releases.length ? (
+                    <ul className="grid gap-2" aria-label="SiteSync releases">
+                      {releases.map((r) => (
+                        <li key={r.id} className="flex flex-wrap items-center gap-2 text-sm">
+                          <DispatchState state={r.dispatchState ?? "unknown"} />
+                          <Link href={`/projects/${r.projectId}`} className="font-medium text-primary hover:underline">
+                            {r.projectName}
+                          </Link>
+                          <span className="text-muted-foreground">release · {formatDateTime(r.createdAt)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
                   {alerts.length ? (
                     <ul className="grid gap-2" aria-label="Deployment alerts">
                       {alerts.map((a) => (

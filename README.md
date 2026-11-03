@@ -6,7 +6,7 @@ A local-first web app for one operator to run a small web studio: clients, websi
 - Build plan: [docs/implementation-plan.md](docs/implementation-plan.md) · progress: [docs/implementation-status.md](docs/implementation-status.md)
 - Decisions: [docs/decisions/](docs/decisions/)
 
-> **Known limitation.** SiteSync cannot stop a hosting provider from auto-deploying to production on push or merge. If auto-publishing is enabled on the provider, code merged to the production branch can go live without passing through SiteSync's approval gate. Lock auto-publishing on the provider (Netlify: lock the published deploy; Vercel: disable automatic production deployments) to make the gate meaningful. Exact settings are verified in Phase 3b.
+> **Known limitation.** SiteSync cannot stop a hosting provider from auto-deploying to production on push or merge. If auto-publishing is enabled on the provider, code merged to the production branch can go live without passing through SiteSync's approval gate. Turn auto-publishing off on the provider to make the gate meaningful: on Cloudflare Pages, untick "Enable automatic production branch deployments"; on Netlify, lock the published deploy; on Vercel, turn off "Auto-assign Custom Production Domains". See [docs/hosting.md](docs/hosting.md).
 
 ## Requirements
 
@@ -58,11 +58,21 @@ SiteSync can read commits, pull requests and check runs from GitHub, and counts 
 
 ## Hosting (optional)
 
-SiteSync reads each website's deploys from **Cloudflare Pages**, Netlify or Vercel: what's live, recent previews, and whether the host auto-deploys. It's read only, and a website without a production host can't be released (readiness says so). A manual host record works without any token. See [docs/hosting.md](docs/hosting.md).
+SiteSync reads each website's deploys from **Cloudflare Pages**, Netlify or Vercel: what's live, recent previews, and whether the host auto-deploys. A website without a production host can't be released (readiness says so). A manual host record works without any token. See [docs/hosting.md](docs/hosting.md).
+
+## Releases
+
+Production releases go through an approval gate:
+1. **Preflight:** live vs proposed, checks and readiness.
+2. **Approve** with a reason. The approval lasts 30 minutes.
+3. **Confirm** with your password: SiteSync re-checks everything and sends the release once.
+4. **Live:** the project moves to Live only when the host confirms the approved commit is live.
+
+Cloudflare Pages releases build the production branch, after checking its head is the approved commit. Netlify and Vercel promote a built deploy. All three can roll back through the same gate. See [docs/hosting.md](docs/hosting.md#releasing) and decision [0011](docs/decisions/0011-cloudflare-release-flow.md).
 
 ## Background jobs
 
-The server runs a small job runner (pg-boss, in the same process). It polls GitHub, processes webhook deliveries and prunes old records. `npm run db:migrate` sets up its `pgboss` schema as the owner role; the app only uses it. Set `SITESYNC_JOBS=off` to run without it: manual refreshes then run immediately instead. See decision [0009](docs/decisions/0009-pg-boss-job-runner.md).
+The server runs a small job runner (pg-boss, in the same process). It polls GitHub and hosts, confirms releases with the host, expires lapsed approvals, processes webhook deliveries and prunes old records. `npm run db:migrate` sets up its `pgboss` schema as the owner role; the app only uses it. Set `SITESYNC_JOBS=off` to run without it: manual refreshes then run immediately instead. See decision [0009](docs/decisions/0009-pg-boss-job-runner.md).
 
 ## Continuous integration
 

@@ -42,6 +42,8 @@ test("add a GitHub integration: env var names only, reserved names refused", asy
   await page.getByRole("link", { name: "Integrations" }).click();
   await expect(page.getByRole("heading", { level: 1, name: "Integrations" })).toBeVisible();
   await expect(page.getByText(/can.t stop a hosting provider from auto-deploying/)).toBeVisible();
+  // The add form starts open only when there are no integrations yet (other specs may have added one).
+  await page.locator("details").filter({ hasText: "Add an integration" }).evaluate((d) => ((d as HTMLDetailsElement).open = true));
 
   const form = page.locator("form").filter({ has: page.getByRole("button", { name: "Add integration" }) });
   await form.getByLabel("Name", { exact: true }).fill("Studio GitHub");
