@@ -3,13 +3,19 @@ import { CircleAlert, CircleCheck, ShieldCheck } from "lucide-react";
 import { ActionButton } from "@/components/forms/action-button";
 import { Card, CardContent } from "@/components/ui/card";
 import { formatDateTime } from "@/lib/format";
-import type { Blocker, Readiness } from "@/server/records/readiness";
+import type { Blocker, ReadinessReport } from "@/server/records/readiness";
 import { revokeWaiverAction, waiveBlockerAction } from "../work-actions";
 import { WaiveForm } from "./waive-form";
 
-function blockerHref(projectId: string, blocker: Blocker): string {
-  if (blocker.type === "critical_task") return `/projects/${projectId}/tasks/${blocker.key.slice("task:".length)}`;
-  return `/projects/${projectId}/settings#checklist`;
+/** Where a blocker is fixed: inside SiteSync, or (for checks) on GitHub. */
+function blockerHref(projectId: string, blocker: Blocker): { href: string; external: boolean } {
+  if (blocker.type === "critical_task") return { href: `/projects/${projectId}/tasks/${blocker.key.slice("task:".length)}`, external: false };
+  if (blocker.type === "failing_check") {
+    const url = blocker.snapshot.htmlUrl;
+    if (typeof url === "string" && url.startsWith("https://")) return { href: url, external: true };
+    return { href: `/projects/${projectId}`, external: false };
+  }
+  return { href: `/projects/${projectId}/settings#checklist`, external: false };
 }
 
 /** Readiness summary for the overview (spec §6, screen 9). */
@@ -19,7 +25,7 @@ export function ReadinessPanel({
   readOnly,
 }: {
   projectId: string;
-  readiness: Readiness;
+  readiness: ReadinessReport;
   readOnly: boolean;
 }) {
   const waive = waiveBlockerAction.bind(null, projectId);
@@ -43,10 +49,18 @@ export function ReadinessPanel({
             ? `Ready to release${readiness.waived.length ? `, with ${readiness.waived.length} waived blocker${readiness.waived.length === 1 ? "" : "s"}` : ""}.`
             : `Not ready: ${readiness.blockers.length} blocker${readiness.blockers.length === 1 ? "" : "s"}.`}{" "}
           <span className="text-muted-foreground">
-            Covers critical tasks and the release checklist; provider checks join when hosting and GitHub are connected.
+            Covers critical tasks, the release checklist and GitHub checks{readiness.commitSha ? ` on ${readiness.commitSha.slice(0, 7)}` : ""}; preview and hosting checks join when hosting is connected.
           </span>
         </p>
       </div>
+
+      {readiness.notes.length ? (
+        <ul className="grid gap-1 text-sm text-muted-foreground" aria-label="Readiness notes">
+          {readiness.notes.map((note) => (
+            <li key={note}>{note}</li>
+          ))}
+        </ul>
+      ) : null}
 
       {readiness.blockers.length ? (
         <Card>
@@ -55,9 +69,19 @@ export function ReadinessPanel({
               {readiness.blockers.map((blocker) => (
                 <li key={blocker.key} className="grid gap-2 border-b pb-3 last:border-b-0 last:pb-0">
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <Link href={blockerHref(projectId, blocker)} className="text-sm text-primary hover:underline">
-                      {blocker.label}
-                    </Link>
+                    {(() => {
+                      const target = blockerHref(projectId, blocker);
+                      return target.external ? (
+                        <a href={target.href} target="_blank" rel="noopener noreferrer nofollow" className="text-sm text-primary hover:underline">
+                          {blocker.label}
+                          <span className="sr-only"> (opens GitHub in a new tab)</span>
+                        </a>
+                      ) : (
+                        <Link href={target.href} className="text-sm text-primary hover:underline">
+                          {blocker.label}
+                        </Link>
+                      );
+                    })()}
                   </div>
                   {readOnly || !blocker.waivable ? null : (
                     <details>

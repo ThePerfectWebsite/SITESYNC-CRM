@@ -6,12 +6,104 @@
 | 0 — Foundation | **Done** | 2026-11-03 |
 | 1 — Core records | **Done** | 2026-11-03 |
 | 2 — Work tracking | **Done** | 2026-11-03 |
-| 3a — GitHub read sync | Not started (ready) | |
-| 3b — Hosting read sync | Not started | |
+| 3a — GitHub read sync | **Done** | 2026-11-03 |
+| 3b — Hosting read sync | Not started (ready) | |
 | 4 — Approval-gated deployment | Not started | |
 | 5 — Operations & polish | Not started | |
 
-**Current phase for the next session:** Phase 3a — GitHub read sync.
+**Current phase for the next session:** Phase 3b — Hosting read sync.
+
+---
+
+## Handoff — Phase 3a (2026-11-03)
+
+### 1. Phase completed and key areas changed
+Phase 3a — GitHub read sync. Committed on `main` after Phase 2 (`c65e275`).
+- **Migrations:**
+  - `0007_github_sync` (generated): `integrations`, `repository_links`, `repository_events`, `webhook_inbox`, with every §3.18–§3.20/§3.24 check. That includes:
+    - env-var-name format;
+    - webhook secret required when enabled;
+    - git branch-name rules, checked against valid and invalid names;
+    - case-insensitive unique repo per website;
+    - one primary repository link per website;
+    - the event identity unique key;
+    - delivery dedupe on `(provider, delivery_id)`.
+  - `0008_github_sync_triggers_grants` (hand-written): `updated_at` triggers; `SELECT, INSERT, UPDATE` (no `DELETE`) on integrations, links and events; `DELETE` only on `webhook_inbox`, for 30-day retention.
+- **Job store** (decision 0009): pg-boss 12.38.0 pinned.
+  - `runMigrations()` now also runs `setupJobStore()` as the owner: the `pgboss` schema, queues, pg-boss's internal scheduler queue, cron schedules, and DML grants for `sitesync_app`.
+  - `src/instrumentation.ts` starts the runner in the Next server as the runtime role. `SITESYNC_JOBS=off` disables it; the inline fallback keeps manual refresh and replay working.
+- **Provider layer** (`src/server/providers/`):
+  - `providerFetch`: https-only allowlist of the three API hosts, no credentials or ports in URLs, same-host redirects only, 10 s timeout.
+  - `http`: Zod-parsed JSON. Rate limits are classified by GitHub's documented rules (403/429 with remaining 0 → wait for the reset; secondary limit or `Retry-After` → wait that long; any other 403/401 → auth). 429/5xx retry with backoff and jitter, at most 5 attempts; auth errors are never retried.
+  - `github`: the §7.1 `SourceAdapter`, plus normalizers shared with webhooks.
+- **Integration services** (`src/server/integrations/`):
+  - `service`: CRUD, enable/disable/archive, env var names only, with a reserved-name guard so an integration can't send `DATABASE_*`/`POSTGRES_*`/`SITESYNC_*` values to GitHub; §5.6 health with audited transitions; test connection.
+  - `repo-links`: one primary per website; repository summary; latest check per name.
+  - `github-sync`: §7.2 bounds; idempotent upsert where only newer provider data overwrites; closes PRs that disappeared; poll due-ness with the rate-limit skip.
+  - `webhooks`: §7.3/§5.5 receive with 1 MiB cap, HMAC, dedupe, allowlist and redacted bounded storage; process; 8-attempt backoff → dead-letter; replay (audited); prune.
+- **Readiness:** `failing_check` blockers come from the latest check run per name on the proposed commit (the production branch head from the last sync or push webhook). A disconnected or erroring integration adds a note, never a blocker. Waivers are verified against current blockers, including check blockers.
+- **Screens:**
+  - 17 `/integrations`: health, env var set/not set (never values), last test/sync/error, rate limit, webhook URL, test/enable/disable/archive/edit, webhook deliveries with replay for dead letters, and the §1.1 auto-deploy caveat.
+  - Website detail: repository links with checks on the head, recent commits, open PRs into production, refresh and unlink, plus the link form.
+  - Overview readiness: notes, and check blockers that link out to GitHub.
+  - Sidebar: Integrations enabled.
+- **Route:** `POST /api/webhooks/github/[integrationId]`. HMAC-authenticated, so no session and no Origin check.
+- **Docs:** decision 0009, `docs/github.md` (token permissions, env var, linking, readiness, webhooks via an operator-run tunnel), README sections, `.env.example` optional names, decision 0005 updated for pg-boss.
+
+### 2. Commands run and actual results
+- `npm run lint` → clean. `npm run typecheck` → passes.
+- `npm run db:migrate` (dev) → `9/9 applied, 0 pending`, plus the job store set up.
+- A pg-boss probe as `sitesync_app` confirmed send, work and stately dedupe with no permission errors.
+- `npm test` → **14 files, 241 tests passed**. A guard fails any un-mocked network request, and adapters use a scripted fake GitHub. New in Phase 3a:
+  - `providers` unit tests (33):
+    - SSRF guard incl. metadata IP, localhost, ports, credentials, cross-host redirect;
+    - rate-limit classification per GitHub docs; 429 Retry-After; 5xx backoff and give-up; auth never retried; far reset → give up;
+    - rate-limit headers reported; bearer token and API version only to api.github.com;
+    - normalization (subject line, unknown fields dropped, merged PRs, check states); pagination bounds and truncation; branch paths with slashes; malformed response;
+    - HMAC valid/invalid/missing/tampered; retry backoff schedule;
+    - reserved env var names; §5.6 health transitions; redacted error detail.
+  - `github` integration tests (23):
+    - env var names only (token value appears nowhere in the DB or audit); reserved/webhook validation; test connection ok/auth error/missing env var with audited health changes; disabled never called; archive guard;
+    - sync stores head/commits/PRs/checks; idempotent; older data never overwrites; disappeared PRs closed; rate limit → degraded + poll skip until reset; poll enqueues only due links;
+    - readiness: failing/running checks block, passing/neutral don't; commit-scoped waiver applies to that head only; disconnected integration → note, and tasks/stage moves still work;
+    - repo link validation and primary handling;
+    - webhooks: 404 when disabled/unknown; 401 for bad/missing/wrong signature with nothing stored; 413; duplicate → 200; non-allowlisted → ignored; push moves the head and records commits; check_run updates checks; body redaction; retry → dead-letter at 8 → replay (audited); retention keeps dead letters;
+    - runtime role runs pg-boss incl. scheduler/maintenance with no errors and no DDL; allowlist enforced; no `DELETE` on events/integrations.
+- `npm run test:e2e` → **27 passed**:
+  - add an integration (reserved name refused), test without the env var → Not configured;
+  - link a repository (validation) → readiness note, no check blocker;
+  - webhook endpoint 404 while disabled → enable → wrong/missing signature 401, valid 202, duplicate 200, oversize 413 → ping processed by the job runner;
+  - webhook route vs Origin-checked routes;
+  - earlier phases unchanged.
+  - The server log showed no job-runner errors.
+- `npm run build` → succeeds.
+- Screens checked at 1280 px and 768 px. Secret scan → clean (the only token-shaped strings are fake values in tests).
+
+### 3. Setup steps and env var names
+- `npm install` (adds `pg-boss`), then `npm run db:migrate`.
+- Optional, names of your choice (spec §10 suggests): `GITHUB_TOKEN`, `GITHUB_WEBHOOK_SECRET`.
+- New optional switch: `SITESYNC_JOBS=off`.
+- See `docs/github.md`.
+
+### 4. Credentials/config the operator still needs to provide
+None required. To use GitHub: a fine-grained read-only token in `.env`, then add the integration and test it.
+
+### 5. Known limitations / unmet criteria
+- **Never run against the real GitHub API.** All verification used a scripted fake built from GitHub's documentation (endpoints, rate-limit rules, webhook signatures). The exact fine-grained token permissions in `docs/github.md` still need checking against a live token. Verify with **Test connection** and one repository before relying on it.
+- `pr_open` stays informational, as OQ-7 allows: open PRs into production are shown, not blocking. Flagging a PR as "must merge" isn't built.
+- Polling runs every 5 minutes, and a link is synced when it's older than `sync.poll_interval_minutes` (default 10). There's no UI for the interval yet; set the `app_settings` key, range 5–60.
+- One process runs the job runner. Webhook processing is retried by our inbox logic, not pg-boss retries (decision 0009).
+- Webhook ordering: an older delivery processed late can't overwrite newer data (upserts compare `provider_updated_at`), but a push webhook always moves the stored branch head.
+- Netlify/Vercel are refused for now (Phase 3b).
+
+### 6. Next phase and decisions needed first
+Next: **Phase 3b — Hosting read sync.** Before starting:
+- Netlify and Vercel tokens are only needed for live use; 3b can be built and tested against fakes like 3a.
+- 3b must:
+  - verify the provider APIs and auto-publish settings against official docs (Phase S handoff §5, spec §1.1) and record them in a decision;
+  - add `hosting_links` and `deployments`, plus the deferred FKs from decision 0007 (`stage_history.deployment_id`, `changes.shipped_in_deployment_id`) and a database-backed `DeploymentFacts`, so the "no connected host" message, skip-over-Live rule and `go_live` start using real data;
+  - add `preview_not_ready` and the unwaivable `hosting:missing` blockers to readiness (decision 0008).
+- Reuse `providerFetch`, `createHttpClient`, the integrations table and health logic, the job runner, and `tests/support/fake-github.ts` as the pattern for fake Netlify/Vercel APIs.
 
 ---
 

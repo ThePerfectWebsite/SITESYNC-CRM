@@ -42,7 +42,7 @@ Build: `tasks`, `changes`, `release_checklist_items`, `readiness_waivers`; check
 
 Tests: readiness blocker computation and waiver matching (incl. `commit_sha`-scoped); waiver requires reason; task complete/reopen invariants; overdue logic around date boundaries/time zones; E2E task + checklist → readiness clears.
 
-## Phase 3a — GitHub read sync
+## Phase 3a — GitHub read sync ✅ (2026-11-03)
 
 Build: `integrations`, `repository_links`, `repository_events`, `webhook_inbox`; `providerFetch()` allowlist; GitHub adapter (§7); pg-boss setup + decision record; jobs: initial sync, poll, manual refresh with singleton keys; rate-limit-aware retry; integrations screen (17) basic; failing checks feed readiness. Webhook route disabled by default (§7.3), inbox processing, retry → dead-letter, replay UI.
 

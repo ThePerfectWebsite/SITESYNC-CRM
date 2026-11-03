@@ -19,7 +19,7 @@ const NAV: NavItem[] = [
   { label: "Dashboard", href: "/", icon: LayoutDashboard, available: true },
   { label: "Clients", href: "/clients", icon: Building2, available: true },
   { label: "Projects", href: "/projects", icon: FolderKanban, available: true },
-  { label: "Integrations", href: "/integrations", icon: PlugZap, available: false },
+  { label: "Integrations", href: "/integrations", icon: PlugZap, available: true },
   { label: "Activity", href: "/activity", icon: Activity, available: false },
   { label: "Settings", href: "/settings", icon: Settings, available: true },
 ];

@@ -1,0 +1,79 @@
+import "server-only";
+// The in-process job runner (decision 0009): pg-boss as the runtime role,
+// started once per server process from instrumentation.ts. If it isn't running
+// (disabled, or the database was down at start), enqueue falls back to doing
+// the work inline so manual actions still work.
+import { PgBoss } from "pg-boss";
+import { db } from "../db";
+import { env } from "../env";
+import { describeError } from "../redact";
+import { processWebhookDelivery } from "../integrations/webhooks";
+import { runMaintenanceJob, runPollJob, runSyncJob, runWebhookRetryJob, type SyncJob } from "./handlers";
+import { JOB_SCHEMA, QUEUES } from "./queues";
+
+type JobState = { boss: PgBoss | null; starting: Promise<void> | null };
+const globalJobs = globalThis as typeof globalThis & { __sitesyncJobs?: JobState };
+const state: JobState = (globalJobs.__sitesyncJobs ??= { boss: null, starting: null });
+
+export function jobsRunning(): boolean {
+  return state.boss !== null;
+}
+
+export function startJobs(): Promise<void> {
+  state.starting ??= start().catch((error) => {
+    state.starting = null;
+    console.error(`[jobs] not started: ${describeError(error)}`);
+  });
+  return state.starting;
+}
+
+async function start(): Promise<void> {
+  const boss = new PgBoss({
+    connectionString: env().databaseUrl,
+    schema: JOB_SCHEMA,
+    migrate: false, // the owner role migrates during db:migrate
+    createSchema: false,
+    supervise: true,
+    schedule: true,
+    application_name: "sitesync-jobs",
+    max: 4,
+  });
+  boss.on("error", (error) => console.error(`[jobs] ${describeError(error)}`));
+  await boss.start();
+
+  const database = db();
+  await boss.work<SyncJob>(QUEUES.githubSync, async (jobs) => {
+    for (const job of jobs) await runSyncJob(database, job.data);
+  });
+  await boss.work(QUEUES.githubPoll, async () => {
+    await runPollJob(database, (job) => enqueueSync(job.linkId, job.mode));
+  });
+  await boss.work<{ inboxId: string }>(QUEUES.webhookProcess, async (jobs) => {
+    for (const job of jobs) await processWebhookDelivery(database, job.data.inboxId);
+  });
+  await boss.work(QUEUES.webhookRetry, async () => {
+    await runWebhookRetryJob(database);
+  });
+  await boss.work(QUEUES.maintenance, async () => {
+    await runMaintenanceJob(database);
+  });
+  state.boss = boss;
+}
+
+/** Queues a sync for a link (at most one queued + one running per link). Returns how it ran. */
+export async function enqueueSync(linkId: string, mode: SyncJob["mode"]): Promise<"queued" | "already_queued" | "ran_inline"> {
+  if (state.boss) {
+    const id = await state.boss.send(QUEUES.githubSync, { linkId, mode }, { singletonKey: linkId });
+    return id ? "queued" : "already_queued";
+  }
+  await runSyncJob(db(), { linkId, mode });
+  return "ran_inline";
+}
+
+export async function enqueueWebhook(inboxId: string): Promise<void> {
+  if (state.boss) {
+    await state.boss.send(QUEUES.webhookProcess, { inboxId });
+    return;
+  }
+  await processWebhookDelivery(db(), inboxId);
+}

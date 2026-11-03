@@ -681,3 +681,204 @@ export const readinessWaivers = pgTable(
       .where(sql`${t.revokedAt} IS NULL`),
   ],
 );
+
+// ---------------------------------------------------------------------------
+// Phase 3a — GitHub read sync (spec §3.18–§3.20, §3.24)
+
+export const PROVIDERS = ["github", "netlify", "vercel"] as const;
+export const INTEGRATION_HEALTH = ["unconfigured", "ok", "degraded", "error", "disabled"] as const;
+export const REPOSITORY_EVENT_TYPES = [
+  "commit",
+  "pull_request",
+  "check_run",
+  "check_suite",
+  "push",
+  "branch_protection",
+] as const;
+export const WEBHOOK_STATUSES = [
+  "received",
+  "processing",
+  "processed",
+  "ignored",
+  "failed",
+  "dead_lettered",
+] as const;
+
+export type Provider = (typeof PROVIDERS)[number];
+export type IntegrationHealth = (typeof INTEGRATION_HEALTH)[number];
+export type RepositoryEventType = (typeof REPOSITORY_EVENT_TYPES)[number];
+export type WebhookStatus = (typeof WEBHOOK_STATUSES)[number];
+
+const ENV_VAR_NAME = sql.raw(`'^[A-Z][A-Z0-9_]{0,63}$'`);
+
+// §3.18 — tokens are never stored: only the *name* of the env var holding one.
+export const integrations = pgTable(
+  "integrations",
+  {
+    id: id(),
+    provider: text("provider").$type<Provider>().notNull(),
+    name: text("name").notNull(),
+    tokenEnvVar: text("token_env_var").notNull(),
+    accountRef: text("account_ref"),
+    webhookEnabled: boolean("webhook_enabled").notNull().default(false),
+    webhookSecretEnvVar: text("webhook_secret_env_var"),
+    health: text("health").$type<IntegrationHealth>().notNull().default("unconfigured"),
+    healthDetail: text("health_detail"),
+    lastTestedAt: tsNull("last_tested_at"),
+    lastSyncStartedAt: tsNull("last_sync_started_at"),
+    lastSyncSucceededAt: tsNull("last_sync_succeeded_at"),
+    lastErrorAt: tsNull("last_error_at"),
+    lastError: text("last_error"),
+    rateLimitRemaining: integer("rate_limit_remaining"),
+    rateLimitLimit: integer("rate_limit_limit"),
+    rateLimitResetAt: tsNull("rate_limit_reset_at"),
+    pollEnabled: boolean("poll_enabled").notNull().default(true),
+    archivedAt: archivedAt(),
+    archivedBy: archivedBy(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    check("integrations_provider_check", sql`${t.provider} IN (${inList(PROVIDERS)})`),
+    check("integrations_name_length", sql`length(${t.name}) BETWEEN 1 AND 100`),
+    check("integrations_token_env_var_format", sql`${t.tokenEnvVar} ~ ${ENV_VAR_NAME}`),
+    check("integrations_account_ref_length", sql`length(${t.accountRef}) <= 200`),
+    check("integrations_webhook_secret_env_var_format", sql`${t.webhookSecretEnvVar} ~ ${ENV_VAR_NAME}`),
+    check(
+      "integrations_webhook_secret_required",
+      sql`NOT ${t.webhookEnabled} OR ${t.webhookSecretEnvVar} IS NOT NULL`,
+    ),
+    check("integrations_health_check", sql`${t.health} IN (${inList(INTEGRATION_HEALTH)})`),
+    check("integrations_health_detail_length", sql`length(${t.healthDetail}) <= 1000`),
+    check("integrations_last_error_length", sql`length(${t.lastError}) <= 2000`),
+    uniqueIndex("integrations_name_live_key")
+      .on(t.provider, t.name)
+      .where(sql`${t.archivedAt} IS NULL`),
+  ],
+);
+
+// §3.19
+export const repositoryLinks = pgTable(
+  "repository_links",
+  {
+    id: id(),
+    websiteId: uuid("website_id")
+      .notNull()
+      .references(() => websites.id, { onDelete: "restrict" }),
+    integrationId: uuid("integration_id")
+      .notNull()
+      .references(() => integrations.id, { onDelete: "restrict" }),
+    owner: text("owner").notNull(),
+    repo: text("repo").notNull(),
+    providerRepoId: text("provider_repo_id"),
+    productionBranch: text("production_branch").notNull(),
+    isPrimary: boolean("is_primary").notNull().default(true),
+    lastSyncedAt: tsNull("last_synced_at"),
+    syncCursor: jsonb("sync_cursor").$type<RepositorySyncCursor>(),
+    archivedAt: archivedAt(),
+    archivedBy: archivedBy(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    check("repository_links_owner_format", sql`${t.owner} ~ '^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$'`),
+    check("repository_links_repo_format", sql`${t.repo} ~ '^[A-Za-z0-9._-]{1,100}$'`),
+    check(
+      "repository_links_branch_format",
+      sql`length(${t.productionBranch}) BETWEEN 1 AND 255 AND ${t.productionBranch} !~ '(\\.\\.|[[:cntrl:] ~^:?*\\[\\\\]|@\\{|^/|/$|\\.lock$|^-)'`,
+    ),
+    check("repository_links_sync_cursor_size", sql`octet_length(${t.syncCursor}::text) <= 4096`),
+    uniqueIndex("repository_links_one_primary_key")
+      .on(t.websiteId)
+      .where(sql`${t.isPrimary} AND ${t.archivedAt} IS NULL`),
+    uniqueIndex("repository_links_repo_live_key")
+      .on(t.websiteId, sql`lower(${t.owner})`, sql`lower(${t.repo})`)
+      .where(sql`${t.archivedAt} IS NULL`),
+    index("repository_links_integration_idx").on(t.integrationId),
+  ],
+);
+
+export type RepositorySyncCursor = {
+  /** Production branch head SHA as of the last sync (or push webhook). */
+  headSha?: string;
+  headCheckedAt?: string;
+};
+
+// §3.20 — normalized, redacted snapshots; never source code.
+export const repositoryEvents = pgTable(
+  "repository_events",
+  {
+    id: id(),
+    repositoryLinkId: uuid("repository_link_id")
+      .notNull()
+      .references(() => repositoryLinks.id, { onDelete: "restrict" }),
+    eventType: text("event_type").$type<RepositoryEventType>().notNull(),
+    providerEventId: text("provider_event_id").notNull(),
+    source: text("source").$type<"poll" | "webhook">().notNull(),
+    commitSha: text("commit_sha"),
+    ref: text("ref"),
+    title: text("title"),
+    authorLogin: text("author_login"),
+    state: text("state"),
+    conclusion: text("conclusion"),
+    htmlUrl: text("html_url"),
+    occurredAt: tsNull("occurred_at").notNull(),
+    providerUpdatedAt: tsNull("provider_updated_at"),
+    snapshot: jsonb("snapshot").notNull().default({}),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    check("repository_events_type_check", sql`${t.eventType} IN (${inList(REPOSITORY_EVENT_TYPES)})`),
+    check("repository_events_provider_event_id_length", sql`length(${t.providerEventId}) BETWEEN 1 AND 200`),
+    check("repository_events_source_check", sql`${t.source} IN ('poll','webhook')`),
+    check("repository_events_commit_sha_format", sql`${t.commitSha} ~ '^[0-9a-f]{40}$'`),
+    check("repository_events_ref_length", sql`length(${t.ref}) <= 255`),
+    check("repository_events_title_length", sql`length(${t.title}) <= 300`),
+    check("repository_events_author_length", sql`length(${t.authorLogin}) <= 100`),
+    check("repository_events_state_length", sql`length(${t.state}) <= 30`),
+    check("repository_events_conclusion_length", sql`length(${t.conclusion}) <= 30`),
+    check(
+      "repository_events_html_url_format",
+      sql`length(${t.htmlUrl}) <= 2048 AND ${t.htmlUrl} ~ '^https://'`,
+    ),
+    check("repository_events_snapshot_size", sql`octet_length(${t.snapshot}::text) <= 65536`),
+    uniqueIndex("repository_events_identity_key").on(t.repositoryLinkId, t.eventType, t.providerEventId),
+    index("repository_events_link_type_idx").on(t.repositoryLinkId, t.eventType, t.occurredAt.desc()),
+    index("repository_events_commit_idx").on(t.commitSha),
+  ],
+);
+
+// §3.24 — bad signatures are rejected before anything is stored.
+export const webhookInbox = pgTable(
+  "webhook_inbox",
+  {
+    id: id(),
+    provider: text("provider").$type<Provider>().notNull(),
+    integrationId: uuid("integration_id").references(() => integrations.id, { onDelete: "restrict" }),
+    deliveryId: text("delivery_id").notNull(),
+    eventType: text("event_type").notNull(),
+    signatureValid: boolean("signature_valid").notNull(),
+    body: jsonb("body").notNull(),
+    bodySha256: bytea("body_sha256").notNull(),
+    receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+    status: text("status").$type<WebhookStatus>().notNull().default("received"),
+    attempts: integer("attempts").notNull().default(0),
+    nextAttemptAt: tsNull("next_attempt_at"),
+    lastError: text("last_error"),
+    processedAt: tsNull("processed_at"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [
+    check("webhook_inbox_provider_check", sql`${t.provider} IN (${inList(PROVIDERS)})`),
+    check("webhook_inbox_delivery_id_length", sql`length(${t.deliveryId}) BETWEEN 1 AND 200`),
+    check("webhook_inbox_event_type_length", sql`length(${t.eventType}) BETWEEN 1 AND 100`),
+    check("webhook_inbox_body_size", sql`octet_length(${t.body}::text) <= 262144`),
+    check("webhook_inbox_status_check", sql`${t.status} IN (${inList(WEBHOOK_STATUSES)})`),
+    check("webhook_inbox_attempts_check", sql`${t.attempts} >= 0`),
+    check("webhook_inbox_last_error_length", sql`length(${t.lastError}) <= 2000`),
+    uniqueIndex("webhook_inbox_delivery_key").on(t.provider, t.deliveryId),
+    index("webhook_inbox_status_idx").on(t.status, t.nextAttemptAt),
+  ],
+);

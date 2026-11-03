@@ -50,6 +50,20 @@
       "when": 1793710362743,
       "tag": "0006_work_tracking_triggers_grants_seed",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1793714025270,
+      "tag": "0007_github_sync",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1793714026670,
+      "tag": "0008_github_sync_triggers_grants",
+      "breakpoints": true
     }
   ]
 }

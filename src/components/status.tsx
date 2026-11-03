@@ -10,11 +10,13 @@ import {
   CircleDot,
   CirclePause,
   CircleSlash,
+  CircleX,
   Flame,
   Hammer,
   Minus,
   Rocket,
   ThumbsUp,
+  TriangleAlert,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -110,6 +112,25 @@ export function ChangeStatus({ status }: { status: keyof typeof CHANGE_STATUS_LA
   };
   const [icon, tone] = config[status];
   return <StatusPill icon={icon} label={CHANGE_STATUS_LABELS[status]} tone={tone} />;
+}
+
+export function IntegrationHealth({ health }: { health: "unconfigured" | "ok" | "degraded" | "error" | "disabled" }) {
+  const config: Record<typeof health, [LucideIcon, Tone, string]> = {
+    unconfigured: [CircleDashed, "muted", "Not configured"],
+    ok: [CircleCheck, "success", "OK"],
+    degraded: [TriangleAlert, "warning", "Degraded"],
+    error: [CircleX, "danger", "Error"],
+    disabled: [CirclePause, "muted", "Disabled"],
+  };
+  const [icon, tone, label] = config[health];
+  return <StatusPill icon={icon} label={label} tone={tone} />;
+}
+
+export function CheckPill({ state, conclusion }: { state: string | null; conclusion: string | null }) {
+  if (state !== "completed") return <StatusPill icon={CircleDot} label={state === "queued" ? "Queued" : "Running"} tone="info" />;
+  if (conclusion === "success") return <StatusPill icon={CircleCheck} label="Passed" tone="success" />;
+  if (conclusion === "neutral" || conclusion === "skipped") return <StatusPill icon={Minus} label={conclusion === "skipped" ? "Skipped" : "Neutral"} tone="muted" />;
+  return <StatusPill icon={CircleX} label={conclusion ? conclusion.replace(/_/g, " ") : "Failed"} tone="danger" />;
 }
 
 export function StagePill({

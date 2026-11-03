@@ -16,6 +16,7 @@ export default defineConfig({
           name: "unit",
           include: ["tests/unit/**/*.test.ts"],
           environment: "node",
+          setupFiles: ["tests/support/no-network.ts"],
         },
       },
       {
@@ -24,7 +25,7 @@ export default defineConfig({
           name: "integration",
           include: ["tests/integration/**/*.test.ts"],
           environment: "node",
-          setupFiles: ["tests/support/integration-env.ts"],
+          setupFiles: ["tests/support/no-network.ts", "tests/support/integration-env.ts"],
           // Files share one test database and reset it; run them one at a time.
           fileParallelism: false,
           testTimeout: 30_000,

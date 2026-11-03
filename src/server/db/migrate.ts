@@ -1,8 +1,9 @@
-// Applies Drizzle migrations as the owner role. Pure (no server-only) — used by
+// Applies Drizzle migrations, then the job store, as the owner role. Pure (no server-only) — used by
 // scripts/db-migrate.ts and the test-database reset.
 import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import pg from "pg";
+import { setupJobStore } from "../jobs/setup";
 import { MIGRATIONS_FOLDER } from "./migrations-info";
 
 export async function runMigrations(ownerUrl: string, folder = MIGRATIONS_FOLDER): Promise<void> {
@@ -17,4 +18,6 @@ export async function runMigrations(ownerUrl: string, folder = MIGRATIONS_FOLDER
   } finally {
     await client.end();
   }
+  // pg-boss owns its schema; it is installed/upgraded here, as the owner (decision 0009).
+  await setupJobStore(ownerUrl);
 }

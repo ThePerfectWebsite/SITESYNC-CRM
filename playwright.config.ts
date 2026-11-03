@@ -29,6 +29,8 @@ export default defineConfig({
       SITESYNC_APP_ORIGIN: ORIGIN,
       SITESYNC_LAN_MODE: "false",
       SITESYNC_PUBLIC_ORIGIN: "",
+      // Only for e2e/github.spec.ts: a webhook secret, and deliberately no GitHub token.
+      E2E_GITHUB_WEBHOOK_SECRET: "e2e-webhook-secret",
     },
   },
 });

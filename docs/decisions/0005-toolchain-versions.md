@@ -17,7 +17,7 @@
 | Zod | 4.6.7 | |
 | Postgres | **18.6** (`postgres:18.6-alpine`) | latest stable major. PG 18 images keep data under `/var/lib/postgresql/<major>/docker`, so the volume mounts `/var/lib/postgresql` |
 | Vitest / Playwright | 5.1.0 / 1.64.1 | |
-| pg-boss | 12.38.0 (latest seen) | **not installed yet** — Phase 3a pins it and records its schema handling |
+| pg-boss | 12.38.0 | pinned in Phase 3a (Node ≥ 22.12); schema handled by the owner role, see decision 0009 |
 
 `cacheComponents` (on by default in new `create-next-app` projects) is left **off**: every page is session-dependent and the per-request CSP nonce requires dynamic rendering.
 

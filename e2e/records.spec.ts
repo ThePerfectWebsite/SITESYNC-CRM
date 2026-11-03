@@ -155,7 +155,8 @@ test("archive hides the project from the list; restore brings it back", async ({
 test("project list filters by stage and the dashboard counts it", async ({ page }) => {
   await expect(page.getByRole("list", { name: /live projects by current stage/ })).toContainText("Ready to Deploy");
   await page.goto("/projects?stage=enquiry");
-  await expect(page.getByText("No projects match")).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "Projects" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Spring relaunch" })).toHaveCount(0);
   await page.goto("/projects?stage=ready_to_deploy");
   await expect(page.getByRole("link", { name: "Spring relaunch" })).toBeVisible();
 });
