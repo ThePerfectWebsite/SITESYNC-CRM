@@ -30,7 +30,7 @@ Tests:
 
 Decide first: OQ-5 (session lifetimes), OQ-8 (Docker installed).
 
-## Phase 1 — Core records
+## Phase 1 — Core records ✅ (2026-11-03)
 
 Build: migrations for `clients`, `contacts`, `websites`, `stage_templates`, `stage_template_steps` (+ seed), `projects` (composite FK), `project_stages`, `stage_history` (append-only). Services with Zod validation + audit for CRUD/archive/restore. Stage service implementing §5.1 (everything except `go_live`, which exists but is only callable by the system path and is unit-tested with a fake deployment). Search (trigram) and filters. Screens 4 (skeleton), 5, 6, 7 (no integrations yet), 8, 9, 12, 14, 19 (shell).
 

@@ -1,5 +1,6 @@
-import { LogOut, Plus, Search } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { LogOut } from "lucide-react";
+import { Suspense } from "react";
+import { GlobalSearch, QuickCreate } from "./header-tools";
 import { SidebarNav } from "./sidebar-nav";
 
 type AppShellProps = {
@@ -38,21 +39,11 @@ export function AppShell({ user, children }: AppShellProps) {
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="sticky top-0 z-10 flex h-14 items-center gap-3 border-b bg-card px-6">
-          {/* Global search (Ctrl/Cmd-K) and quick-create arrive in Phase 1. */}
-          <Button
-            variant="outline"
-            className="h-9 w-full max-w-sm justify-start gap-2 text-muted-foreground"
-            disabled
-            title="Search arrives with clients and projects (Phase 1)"
-          >
-            <Search aria-hidden="true" />
-            Search clients, websites, projects
-            <kbd className="ml-auto rounded border px-1.5 text-[0.7rem]">Ctrl K</kbd>
-          </Button>
-          <Button className="ml-auto h-9" disabled title="Quick create arrives in Phase 1">
-            <Plus aria-hidden="true" />
-            New
-          </Button>
+          {/* useSearchParams needs a Suspense boundary. */}
+          <Suspense fallback={<div className="h-9 w-full max-w-sm" />}>
+            <GlobalSearch />
+          </Suspense>
+          <QuickCreate />
         </header>
         <main id="main" tabIndex={-1} className="flex-1 px-6 py-6 focus:outline-none">
           {children}

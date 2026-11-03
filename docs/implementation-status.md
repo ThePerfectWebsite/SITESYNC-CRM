@@ -4,14 +4,108 @@
 |---|---|---|
 | S — Specification | **Done — approved by operator** | 2026-11-03 |
 | 0 — Foundation | **Done** | 2026-11-03 |
-| 1 — Core records | Not started (ready) | |
-| 2 — Work tracking | Not started | |
+| 1 — Core records | **Done** | 2026-11-03 |
+| 2 — Work tracking | Not started (ready) | |
 | 3a — GitHub read sync | Not started | |
 | 3b — Hosting read sync | Not started | |
 | 4 — Approval-gated deployment | Not started | |
 | 5 — Operations & polish | Not started | |
 
-**Current phase for the next session:** Phase 1 — Core records.
+**Current phase for the next session:** Phase 2 — Work tracking.
+
+---
+
+## Handoff — Phase 1 (2026-11-03)
+
+### 1. Phase completed and key areas changed
+Phase 1 — Core records. Committed on `main` after Phase 0 (`e96517e`).
+- **Migrations:**
+  - `0003_core_records` (generated): `clients`, `contacts`, `websites`, `stage_templates`, `stage_template_steps`, `projects`, `project_stages`, `stage_history`. It includes:
+    - every spec §3.6–§3.13 check, partial unique index and trigram index;
+    - the composite FK `projects_website_same_client_fk` (decision 0001);
+    - the one-current-stage index;
+    - `stage_history` checks that make `go_live` system-only and require a deployment.
+  - `0004_core_records_triggers_grants_seed` (hand-written):
+    - the deferrable `(template, position)` unique constraint;
+    - `updated_at` triggers;
+    - append-only triggers on `stage_history`;
+    - two deferred constraint triggers: template shape, and exactly one current stage per project;
+    - grants: `SELECT, INSERT, UPDATE` on core tables (no `DELETE`: archive, don't delete); `SELECT, INSERT` on `stage_history`;
+    - the "Standard website project" template seed, guarded by "no templates exist".
+- **Stage machine** (`src/server/stages/`):
+  - `machine.ts`: pure §5.1 rules (initial, advance, skip_forward, move_back, hold, resume, archive, restore, go_live) plus `inferTransition` for the UI.
+  - `service.ts`: one transaction per transition — lock, optimistic `expectedCurrentStageId`, status updates, audit, history.
+  - `systemGoLive()` exists for Phases 3b/4 but nothing calls it.
+  - `deployment-facts.ts`: the interface for hosting/deployment facts, answering "none" until those tables exist (decision 0007).
+- **Record services** (`src/server/records/`):
+  - `clients`, `contacts` (one primary per client), `websites` (domain normalized), `projects` (copies template steps, decision 0003), `templates` (step rename), `search` (ILIKE + `pg_trgm` `%`), `activity`;
+  - shared Zod `fields`, `errors` (`DomainError`), `actor`.
+  - Every create, update, archive and restore writes a redacted audit event.
+- **Screens:**
+  - 4 Dashboard skeleton: projects per stage, overdue projects, recent activity without sign-ins.
+  - 5 `/clients`: search, status, archived toggle.
+  - 6 `/clients/[id]`: contacts, websites, projects, activity.
+  - 7 `/websites/[id]`: no integrations yet.
+  - 8 `/projects`: filters for stage, client and overdue; archived toggle; sorted by target date.
+  - 9 `/projects/[id]`: stage rail and moves; "no connected hosting provider" explanation.
+  - 12 `/projects/[id]/activity`.
+  - 14 `/projects/[id]/settings`: details, archive.
+  - 19 `/settings`: read-only templates, session, mode, backup, version.
+  - Also: `/search`, plus new/edit pages for clients, websites and projects.
+  - Header: global search (Ctrl/Cmd-K focuses it) and a working "New" quick-create menu.
+- **Decision 0007:** stage rules that depend on deployments, before the deployments tables exist.
+
+### 2. Commands run and actual results
+- `npm run lint` → no problems. `npm run typecheck` → passes.
+- `npm run db:migrate` (dev) and `npm run db:migrate -- --test` → `5/5 applied, 0 pending`.
+- `npm test` → **10 files, 147 tests passed**. New in Phase 1:
+  - `stage-machine` unit tests (31): every transition, invalid ones, Live never reachable by a user, skip-over-Live with and without an integration-backed link, go_live deployment checks.
+  - `stages` integration tests:
+    - composite FK rejects a cross-client website in the DB (23503) and in the service;
+    - website change refused once deployments exist;
+    - transitions persist history and audit; stale expected stage refused;
+    - go_live refuses manual-record and unconfirmed deploys, and succeeds as system with a fake confirmed deploy;
+    - DB refuses a user `go_live` row;
+    - **atomicity:** an injected failure after the history insert leaves stages, audit and history untouched (user path and go_live path);
+    - one-current-stage unique index and deferred trigger;
+    - `stage_history` append-only for both roles;
+    - archive/restore, including from On Hold and code clashes;
+    - a template edit doesn't affect existing projects;
+    - list filters, including overdue.
+  - `records` integration tests: validation, slug generation, audit before/after, archive/restore and "archive children first", one primary contact, domain rules, search incl. typo and wildcard escaping, scoped activity.
+- `npm run test:e2e` → **17 passed** (11 Phase 0 + 6 new):
+  - create client → contact → website → project → advance → skip with reason → activity shows both moves and the reason, with no console errors;
+  - Ready to Deploy explanation, and no "Advance to Live";
+  - Ctrl-K search by project code;
+  - archive hides from list, restore returns to the same stage;
+  - stage filter and dashboard count;
+  - malformed and unknown ids return 404.
+- `npm run build` → succeeds; all routes dynamic.
+- Screens checked by screenshot at 1280 px and 768 px.
+- Secret scan of changed files → clean; no `0.0.0.0` binding.
+
+### 3. Setup steps and env var names
+No new env vars or setup steps. Run `npm run db:migrate` to apply `0003`/`0004`.
+
+### 4. Credentials/config the operator still needs to provide
+None.
+
+### 5. Known limitations / unmet criteria
+- **No project can reach Live yet.** `go_live` only runs from the deployment confirmation path (Phases 3b/4). Until then projects stop at Ready to Deploy, or skip past Live with a reason (Live is recorded as skipped). This follows decisions 0004 and 0007.
+- `stage_history.deployment_id` has no FK until `deployments` exists. Phase 3b must add it, together with a real `DeploymentFacts` (decision 0007).
+- Template editing UI is not built. The service can rename steps; the full editor is in a later phase.
+- Global search is a results page reached from the header box (Ctrl/Cmd-K focuses it), not an as-you-type popup. Tasks join search in Phase 2.
+- Tasks, Changes and Deployments tabs and the readiness summary are placeholders.
+- "Overdue" compares the target launch date with today in the server's local time zone. Date-boundary tests for tasks are Phase 2.
+- Sticky table headers apply at ≥1024 px only. Below that, tables scroll horizontally, and a sticky header inside the scroll container would overlap rows.
+- Archiving a client or website is refused while it has live projects (or a client has live websites). Archive the children first.
+
+### 6. Next phase and decisions needed first
+Next: **Phase 2 — Work tracking.** No open decisions. Reminders:
+- New tables need explicit grants (decision 0006). Follow Phase 1 and grant no `DELETE` where records are archived.
+- `readiness_waivers` and checklist items hang off projects. Readiness feeds the RTD confirmation and the overview's "Readiness" placeholder.
+- Add tasks to `searchRecords` and to the quick-create menu (currently disabled items).
+- Use `requireActor(...boundIds)` in record Server Actions and `runForm` for DomainError → form state. Forms use `key={state.key}` so they remount with echoed values: React resets fields after an action, and a select's `defaultValue` can't change after mount.
 
 ---
 

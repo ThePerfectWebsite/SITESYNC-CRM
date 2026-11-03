@@ -43,7 +43,11 @@ describe("audit_events is append-only", () => {
     });
 
     it("rejects TRUNCATE", async () => {
-      await expect(owner.query("TRUNCATE audit_events")).rejects.toThrow(/append-only table: TRUNCATE is not permitted/);
+      // CASCADE gets past the FK from stage_history, so the trigger is what refuses.
+      await expect(owner.query("TRUNCATE audit_events CASCADE")).rejects.toThrow(
+        /append-only table: TRUNCATE is not permitted/,
+      );
+      await expect(owner.query("TRUNCATE audit_events")).rejects.toThrow();
     });
   });
 

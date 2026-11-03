@@ -10,7 +10,7 @@ type FieldProps = React.ComponentProps<"input"> & {
 
 /** Labelled input with hint and error text wired up for assistive tech. */
 export function Field({ name, label, hint, error, ...inputProps }: FieldProps) {
-  const id = `field-${name}`;
+  const id = inputProps.id ?? `field-${name}`;
   const hintId = hint ? `${id}-hint` : undefined;
   const errorId = error ? `${id}-error` : undefined;
   return (

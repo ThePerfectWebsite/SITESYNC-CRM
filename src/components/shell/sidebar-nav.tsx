@@ -17,11 +17,11 @@ type NavItem = { label: string; href: string; icon: LucideIcon; available: boole
 // Sections not built yet are listed (so the shape of the app is visible) but not linked.
 const NAV: NavItem[] = [
   { label: "Dashboard", href: "/", icon: LayoutDashboard, available: true },
-  { label: "Clients", href: "/clients", icon: Building2, available: false },
-  { label: "Projects", href: "/projects", icon: FolderKanban, available: false },
+  { label: "Clients", href: "/clients", icon: Building2, available: true },
+  { label: "Projects", href: "/projects", icon: FolderKanban, available: true },
   { label: "Integrations", href: "/integrations", icon: PlugZap, available: false },
   { label: "Activity", href: "/activity", icon: Activity, available: false },
-  { label: "Settings", href: "/settings", icon: Settings, available: false },
+  { label: "Settings", href: "/settings", icon: Settings, available: true },
 ];
 
 export function SidebarNav() {

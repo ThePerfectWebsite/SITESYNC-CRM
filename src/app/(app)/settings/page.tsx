@@ -1,0 +1,88 @@
+import type { Metadata } from "next";
+import { eq } from "drizzle-orm";
+import packageJson from "../../../../package.json";
+import { Details, PageHeader, Section } from "@/components/page";
+import { StagePill } from "@/components/status";
+import { Card, CardContent } from "@/components/ui/card";
+import { formatDateTime } from "@/lib/format";
+import { requireSession } from "@/server/auth/next";
+import { getSessionPolicy } from "@/server/auth/policy";
+import { db } from "@/server/db";
+import { appSettings } from "@/server/db/schema";
+import { env } from "@/server/env";
+import { listTemplates } from "@/server/records/templates";
+
+export const metadata: Metadata = { title: "Settings" };
+
+function lastBackup(value: unknown): { at: string; file: string } | null {
+  if (value && typeof value === "object" && "at" in value && "file" in value) {
+    const { at, file } = value as { at: unknown; file: unknown };
+    if (typeof at === "string" && typeof file === "string") return { at, file };
+  }
+  return null;
+}
+
+// Screen 19, Phase 1 shell: read-only. Template editing and the checklist
+// template arrive in later phases.
+export default async function SettingsPage() {
+  await requireSession();
+  const database = db();
+  const [templates, policy, backupRows] = await Promise.all([
+    listTemplates(database),
+    getSessionPolicy(database),
+    database.select({ value: appSettings.value }).from(appSettings).where(eq(appSettings.key, "backup.last_run")),
+  ]);
+  const backup = lastBackup(backupRows[0]?.value);
+  const config = env();
+
+  return (
+    <div className="grid gap-8">
+      <PageHeader crumbs={[{ label: "Settings" }]} title="Settings" />
+
+      <Section title="Workflow templates">
+        <p className="text-sm text-muted-foreground">
+          New projects copy their template&apos;s stages, so changing a template never alters existing projects. Editing
+          templates arrives in a later phase.
+        </p>
+        {templates.map((template) => (
+          <Card key={template.id}>
+            <CardContent className="grid gap-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="font-semibold">{template.name}</h3>
+                {template.isDefault ? <span className="text-xs text-muted-foreground">Default</span> : null}
+              </div>
+              {template.description ? <p className="text-sm text-muted-foreground">{template.description}</p> : null}
+              <ol className="flex flex-wrap gap-1.5" aria-label={`${template.name} stages`}>
+                {template.steps.map((step) => (
+                  <li key={step.id}>
+                    <StagePill name={step.name} kind={step.kind} role={step.role} />
+                  </li>
+                ))}
+              </ol>
+            </CardContent>
+          </Card>
+        ))}
+      </Section>
+
+      <Section title="System">
+        <Card>
+          <CardContent>
+            <Details
+              items={[
+                ["Version", packageJson.version],
+                [
+                  "Network mode",
+                  config.lanMode
+                    ? `LAN mode via ${config.appOrigin} (HTTPS reverse proxy)`
+                    : "Local only (127.0.0.1)",
+                ],
+                ["Session lifetime", `${policy.idleMinutes / 60} h idle, ${policy.absoluteHours} h maximum`],
+                ["Last backup", backup ? `${formatDateTime(backup.at)} (${backup.file})` : "Never. Run npm run db:backup."],
+              ]}
+            />
+          </CardContent>
+        </Card>
+      </Section>
+    </div>
+  );
+}
